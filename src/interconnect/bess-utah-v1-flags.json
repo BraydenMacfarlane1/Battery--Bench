@@ -1,0 +1,314 @@
+{
+  "$id": "https://brayden.solar/schemas/bess-utah-v1-flags.json",
+  "title": "BessUtahV1FlagCatalog",
+  "description": "Output flag catalog for Utah-first BESS sizing card. Evaluate `when` against BessUtahV1Inputs. Severity: hard_fail|warn|info. interconnect_ready fail-closed on any hard_fail OR CIRCUIT_HEADROOM_UNKNOWN OR OTHER_UTAH_UNKNOWN. AHJ_FIRE_UNVERIFIED always warn in v1. Do not silent hard-code export_mode.",
+  "flagShape": {
+    "type": "object",
+    "required": [
+      "code",
+      "severity",
+      "message",
+      "gate"
+    ],
+    "properties": {
+      "code": {
+        "type": "string"
+      },
+      "severity": {
+        "enum": [
+          "hard_fail",
+          "warn",
+          "info"
+        ]
+      },
+      "message": {
+        "type": "string"
+      },
+      "gate": {
+        "type": "string"
+      }
+    }
+  },
+  "rollup": {
+    "interconnect_ready": "false if any hard_fail OR CIRCUIT_HEADROOM_UNKNOWN OR OTHER_UTAH_UNKNOWN",
+    "fire_ready": "false if fire-gate hard_fail OR UL9540_REQUIRED",
+    "export_assumption": "echo export_mode",
+    "rmp_export_status": {
+      "n/a": "utility != rmp",
+      "assumed_non_export": "utility==rmp && export_mode==non_export",
+      "export_confirmed_by_user": "utility==rmp && export_mode!=non_export && rmp_battery_export_confirmed==true",
+      "export_warned_unconfirmed": "utility==rmp && export_mode!=non_export && rmp_battery_export_confirmed!=true"
+    },
+    "prefillHintsOnly": {
+      "rmp": "Suggest export_mode=non_export in UI; do not silent hard-code",
+      "murray": "Show 500 kW commercial cap",
+      "provo_st_george": "Require battery_on_diagram_ack"
+    }
+  },
+  "flags": [
+    {
+      "code": "RMP_INTERIM_NO_EXPORT_UNCONFIRMED",
+      "severity": "warn",
+      "gate": "export",
+      "when": "utility == 'rmp' && export_mode != 'non_export' && rmp_battery_export_confirmed != true",
+      "message": "PacifiCorp interim battery tech requirements say battery systems shall not export at POI. Exportable sizing is warn-until-confirmed \u2014 confirm with RMP interconnect before treating as approved."
+    },
+    {
+      "code": "RMP_INTERIM_NON_EXPORT_DEFAULT_HINT",
+      "severity": "info",
+      "gate": "export",
+      "when": "utility == 'rmp' && export_mode == 'non_export'",
+      "message": "RMP interim path: non-export is the conservative default until RMP confirms otherwise."
+    },
+    {
+      "code": "EXPORT_LIMIT_REQUIRED",
+      "severity": "hard_fail",
+      "gate": "export",
+      "when": "export_mode == 'limited_export' && (export_limit_kw == null || export_limit_kw <= 0)",
+      "message": "limited_export requires export_limit_kw > 0."
+    },
+    {
+      "code": "NON_EXPORT_METHOD_REQUIRED",
+      "severity": "hard_fail",
+      "gate": "export",
+      "when": "(export_mode == 'non_export' || export_mode == 'limited_export') && non_export_method == null",
+      "message": "Select reverse_power, min_import, certified_pcs, or other."
+    },
+    {
+      "code": "PCS_CERT_REQUIRED",
+      "severity": "hard_fail",
+      "gate": "export",
+      "when": "non_export_method == 'certified_pcs' && (pcs_cert_id == null || pcs_cert_id == '')",
+      "message": "PCS cert ID required."
+    },
+    {
+      "code": "RMP_REVERSE_POWER_NOTE",
+      "severity": "warn",
+      "gate": "export",
+      "when": "utility == 'rmp' && export_mode == 'non_export' && non_export_method == 'reverse_power'",
+      "message": "Policy 138: trip if real power toward PacifiCorp exceeds transformer losses for >0.5 s \u2014 commission and document."
+    },
+    {
+      "code": "RATINGS_INCOMPLETE",
+      "severity": "hard_fail",
+      "gate": "ratings",
+      "when": "(project_type == 'new_pv_storage' || project_type == 'storage_addon_existing_pv') && (pv_kw_dc == null || pv_inverter_kw_ac == null)",
+      "message": "Collect AC nameplate, DC PV capacity, and kWh separately."
+    },
+    {
+      "code": "SCHED137_RES_CAP",
+      "severity": "hard_fail",
+      "gate": "schedule_137",
+      "when": "schedule_path == 'sched_137_net_billing' && customer_class == 'residential' && pv_kw_dc != null && pv_kw_dc > 25",
+      "message": "Schedule 137 residential Installed Capacity \u226425 kW DC."
+    },
+    {
+      "code": "SCHED137_NONRES_CAP",
+      "severity": "hard_fail",
+      "gate": "schedule_137",
+      "when": "schedule_path == 'sched_137_net_billing' && customer_class == 'non_residential' && pv_kw_dc != null && pv_kw_dc > 2000",
+      "message": "Schedule 137 non-residential Installed Capacity \u22642 MW DC (batteries included as RGF)."
+    },
+    {
+      "code": "RMP_PE_STAMP",
+      "severity": "warn",
+      "gate": "protection",
+      "when": "utility == 'rmp' && aggregate_ac_nameplate_kw >= 250",
+      "message": "Policy 138: PE-stamped drawings typically required \u2265250 kW."
+    },
+    {
+      "code": "RMP_RELAY_500",
+      "severity": "warn",
+      "gate": "protection",
+      "when": "utility == 'rmp' && aggregate_ac_nameplate_kw >= 500",
+      "message": "Policy 138: utility-grade relay/breaker path at \u2265500 kW aggregate IBR \u2014 expect study/protection scope."
+    },
+    {
+      "code": "RMP_HIGH_SIDE_2500",
+      "severity": "warn",
+      "gate": "protection",
+      "when": "utility == 'rmp' && aggregate_ac_nameplate_kw >= 2500",
+      "message": "Policy 138: high-side interrupting device territory \u22652500 kW."
+    },
+    {
+      "code": "RMP_TELEMETRY",
+      "severity": "warn",
+      "gate": "protection",
+      "when": "utility == 'rmp' && aggregate_ac_nameplate_kw >= 3000",
+      "message": "Policy 138 telemetry threshold \u22653 MW (possible \u22651 MW \u2014 verify)."
+    },
+    {
+      "code": "RMP_XFMR_OVERSIZE",
+      "severity": "hard_fail",
+      "gate": "transformer",
+      "when": "utility == 'rmp' && service_xfmr_kva != null && customer_class == 'non_residential' && aggregate_ac_nameplate_kw > service_xfmr_kva",
+      "message": "Policy 138 \u00a73.9.3: DER >100% service XFMR \u2192 replacement expected."
+    },
+    {
+      "code": "RMP_XFMR_UNKNOWN",
+      "severity": "warn",
+      "gate": "transformer",
+      "when": "utility == 'rmp' && service_xfmr_kva == null && aggregate_ac_nameplate_kw > 0",
+      "message": "Service transformer kVA unknown \u2014 cannot run XFMR capacity gate."
+    },
+    {
+      "code": "CIRCUIT_HEADROOM_UNKNOWN",
+      "severity": "warn",
+      "gate": "circuit_screen",
+      "when": "circuit_peak_kw == null",
+      "message": "Utah R746-312 15% circuit screen needs utility peak/hosting data. Do not invent headroom. interconnect_ready stays false until data provided or utility confirms.",
+      "failClosedInterconnectReady": true
+    },
+    {
+      "code": "CIRCUIT_15PCT_EXCEEDED",
+      "severity": "hard_fail",
+      "gate": "circuit_screen",
+      "when": "circuit_peak_kw != null && aggregate_ac_nameplate_kw > 0.15 * circuit_peak_kw",
+      "message": "R746-312 Level screen fail \u2014 study path."
+    },
+    {
+      "code": "LEVEL1_ELIGIBLE",
+      "severity": "info",
+      "gate": "review_level",
+      "when": "aggregate_ac_nameplate_kw <= 25",
+      "message": "Likely Level 1 review path (inverter-based \u226425 kW)."
+    },
+    {
+      "code": "LEVEL2_ELIGIBLE",
+      "severity": "info",
+      "gate": "review_level",
+      "when": "aggregate_ac_nameplate_kw > 25 && aggregate_ac_nameplate_kw <= 2000",
+      "message": "Likely Level 2 path if screens pass (\u22642 MW)."
+    },
+    {
+      "code": "ADDON_EXCEEDS_PRIOR",
+      "severity": "hard_fail",
+      "gate": "addon",
+      "when": "project_type == 'storage_addon_existing_pv' && existing_approved_der_kw_ac != null && aggregate_ac_nameplate_kw > existing_approved_der_kw_ac",
+      "message": "Proposed aggregate exceeds prior approval \u2014 treat as modified interconnect."
+    },
+    {
+      "code": "ADDON_PRIOR_UNKNOWN",
+      "severity": "hard_fail",
+      "gate": "addon",
+      "when": "project_type == 'storage_addon_existing_pv' && existing_approved_der_kw_ac == null",
+      "message": "Existing approved DER kW required for addon projects."
+    },
+    {
+      "code": "AC_COUPLED_DISCONNECT",
+      "severity": "warn",
+      "gate": "coupling",
+      "when": "coupling == 'ac_coupled'",
+      "message": "AC-coupled battery needs separate AC disconnect (RMP interim / Policy 138 App H)."
+    },
+    {
+      "code": "DC_SHARED_DISCONNECT_OK",
+      "severity": "info",
+      "gate": "coupling",
+      "when": "coupling == 'dc_shared_inverter'",
+      "message": "Shared disconnect allowed only when DC-coupled same inverter."
+    },
+    {
+      "code": "UL1741SB_REQUIRED",
+      "severity": "hard_fail",
+      "gate": "listings",
+      "when": "utility == 'rmp' && new_inverter_application == true && ul_1741_sb == false",
+      "message": "RMP requires UL 1741 SB for new inverter applications (eff. 6/1/2024)."
+    },
+    {
+      "code": "UL9540_REQUIRED",
+      "severity": "hard_fail",
+      "gate": "listings",
+      "when": "ul_9540 == false",
+      "message": "UL 9540 system listing required for permit-ready ESS."
+    },
+    {
+      "code": "UL9540A_FOR_RELIEF",
+      "severity": "warn",
+      "gate": "listings",
+      "when": "(claim_9540a_reduced_spacing == true || claim_maq_variance == true) && ul_9540a == false",
+      "message": "Spacing/MAQ relief claims need UL 9540A + AHJ acceptance."
+    },
+    {
+      "code": "FIRE_PATH_20KWH",
+      "severity": "warn",
+      "gate": "fire",
+      "when": "chemistry == 'li_ion' && storage_usable_kwh >= 20",
+      "message": "Utah Fire Code: Li-ion \u226520 kWh triggers ESS (Ch.1207) permit path."
+    },
+    {
+      "code": "GROUP_SIZE_50KWH",
+      "severity": "warn",
+      "gate": "fire",
+      "when": "unit_kwh != null && unit_kwh > 50 && !(ul_9540a == true && claim_9540a_reduced_spacing == true)",
+      "message": "Default max group 50 kWh without 9540A + AHJ reduction."
+    },
+    {
+      "code": "SPACING_3FT_DEFAULT",
+      "severity": "info",
+      "gate": "fire",
+      "when": "true",
+      "message": "Default \u22653 ft between groups and walls unless 9540A + AHJ.",
+      "always": true
+    },
+    {
+      "code": "OUTDOOR_CLEARANCE_10FT",
+      "severity": "hard_fail",
+      "gate": "fire",
+      "when": "siting == 'outdoor_near_exposures' && clearance_ft != null && clearance_ft < 10 && claim_9540a_reduced_spacing != true",
+      "message": "Default 10 ft to exposures; <10 ft needs listed exception / barrier / 9540A path."
+    },
+    {
+      "code": "OUTDOOR_CLEARANCE_UNKNOWN",
+      "severity": "warn",
+      "gate": "fire",
+      "when": "(siting == 'outdoor_near_exposures' || siting == 'outdoor_remote') && clearance_ft == null",
+      "message": "Clearances unknown \u2014 cannot clear footprint gate."
+    },
+    {
+      "code": "MAQ_600KWH",
+      "severity": "hard_fail",
+      "gate": "fire",
+      "when": "chemistry == 'li_ion' && storage_usable_kwh > 600 && claim_maq_variance != true",
+      "message": "Default MAQ 600 kWh Li-ion per fire area without HMA/variance."
+    },
+    {
+      "code": "AHJ_FIRE_UNVERIFIED",
+      "severity": "warn",
+      "gate": "fire",
+      "when": "true",
+      "message": "Using IFC/Utah 1207 defaults; local FM amendments unverified \u2014 confirm AHJ.",
+      "always": true
+    },
+    {
+      "code": "MURRAY_500KW_CAP",
+      "severity": "hard_fail",
+      "gate": "muni",
+      "when": "utility == 'murray' && customer_class == 'non_residential' && aggregate_ac_nameplate_kw > 500",
+      "message": "Murray commercial net-metering agreement cap \u2264500 kW."
+    },
+    {
+      "code": "MUNI_BATTERY_ON_DIAGRAM",
+      "severity": "hard_fail",
+      "gate": "muni",
+      "when": "(utility == 'provo' || utility == 'st_george') && battery_on_diagram_ack != true",
+      "message": "Battery banks must appear on diagrams/application \u2014 set battery_on_diagram_ack."
+    },
+    {
+      "code": "OTHER_UTAH_UNKNOWN",
+      "severity": "warn",
+      "gate": "muni",
+      "when": "utility == 'other_utah'",
+      "message": "Export/PCS/size rules unknown \u2014 verify with utility before interconnect-ready.",
+      "failClosedInterconnectReady": true
+    },
+    {
+      "code": "R746_312_EXPORT_CAPACITY_PENDING",
+      "severity": "info",
+      "gate": "docket",
+      "when": "true",
+      "message": "Do not assume export-capacity screens replace nameplate \u2014 Docket 23-R312-01 not coded as adopted.",
+      "always": true
+    }
+  ]
+}

@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brayden.solar/schemas/bess-utah-v1.schema.json",
+  "title": "BessUtahV1Inputs",
+  "description": "Utah-first commercial BESS sizing card inputs (Interconnect v1). Fire defaults = IFC/Utah 1207; AHJ_FIRE_UNVERIFIED always warn. Do NOT silently hard-code export_mode=non_export (UI hint only for RMP).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "utility",
+    "project_type",
+    "export_mode",
+    "coupling",
+    "siting",
+    "chemistry",
+    "customer_class",
+    "storage_usable_kwh",
+    "storage_discharge_kw_ac",
+    "aggregate_ac_nameplate_kw",
+    "ul_9540",
+    "ul_9540a",
+    "ul_1741_sb",
+    "rmp_battery_export_confirmed"
+  ],
+  "properties": {
+    "utility": {
+      "type": "string",
+      "enum": [
+        "rmp",
+        "murray",
+        "provo",
+        "st_george",
+        "other_utah",
+        "pge",
+        "sce",
+        "smud",
+        "nv_energy",
+        "idaho_power"
+      ]
+    },
+    "ahj": {
+      "type": "string",
+      "default": "unknown"
+    },
+    "project_type": {
+      "type": "string",
+      "enum": [
+        "new_pv_storage",
+        "storage_addon_existing_pv",
+        "standalone_storage"
+      ]
+    },
+    "export_mode": {
+      "type": "string",
+      "enum": [
+        "non_export",
+        "limited_export",
+        "export_net_billing"
+      ]
+    },
+    "coupling": {
+      "type": "string",
+      "enum": [
+        "ac_coupled",
+        "dc_shared_inverter",
+        "dc_separate_inverters"
+      ]
+    },
+    "schedule_path": {
+      "type": "string",
+      "enum": [
+        "sched_137_net_billing",
+        "sched_135_136_grandfathered",
+        "partial_requirements_other",
+        "unknown"
+      ],
+      "default": "unknown"
+    },
+    "customer_class": {
+      "type": "string",
+      "enum": [
+        "residential",
+        "non_residential"
+      ],
+      "default": "non_residential"
+    },
+    "non_export_method": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "reverse_power",
+        "min_import",
+        "certified_pcs",
+        "other",
+        null
+      ]
+    },
+    "pcs_cert_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "siting": {
+      "type": "string",
+      "enum": [
+        "indoor",
+        "outdoor_near_exposures",
+        "outdoor_remote"
+      ]
+    },
+    "chemistry": {
+      "type": "string",
+      "enum": [
+        "li_ion",
+        "other"
+      ]
+    },
+    "pv_kw_dc": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "pv_inverter_kw_ac": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "storage_usable_kwh": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "storage_discharge_kw_ac": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "storage_charge_kw_ac": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "storage_inverter_kw_ac": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "aggregate_ac_nameplate_kw": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Proposed TOTAL AC inverter nameplate at PCC"
+    },
+    "existing_approved_der_kw_ac": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "service_xfmr_kva": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "exclusiveMinimum": 0
+    },
+    "export_limit_kw": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "clearance_ft": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "unit_kwh": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "exclusiveMinimum": 0
+    },
+    "unit_count": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "customer_peak_kw": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "circuit_peak_kw": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "exclusiveMinimum": 0
+    },
+    "ul_9540": {
+      "type": "boolean"
+    },
+    "ul_9540a": {
+      "type": "boolean"
+    },
+    "ul_1741_sb": {
+      "type": "boolean"
+    },
+    "claim_9540a_reduced_spacing": {
+      "type": "boolean",
+      "default": false
+    },
+    "claim_maq_variance": {
+      "type": "boolean",
+      "default": false
+    },
+    "rmp_battery_export_confirmed": {
+      "type": "boolean",
+      "default": false,
+      "description": "True only when Brayden/RMP confirmed interim no-battery-export is NOT applied for this project"
+    },
+    "new_inverter_application": {
+      "type": "boolean",
+      "default": true
+    },
+    "battery_on_diagram_ack": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "export_mode": {
+            "const": "limited_export"
+          }
+        },
+        "required": [
+          "export_mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "export_limit_kw"
+        ],
+        "properties": {
+          "export_limit_kw": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "export_mode": {
+            "enum": [
+              "non_export",
+              "limited_export"
+            ]
+          }
+        },
+        "required": [
+          "export_mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "non_export_method"
+        ],
+        "properties": {
+          "non_export_method": {
+            "type": "string",
+            "enum": [
+              "reverse_power",
+              "min_import",
+              "certified_pcs",
+              "other"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "non_export_method": {
+            "const": "certified_pcs"
+          }
+        },
+        "required": [
+          "non_export_method"
+        ]
+      },
+      "then": {
+        "required": [
+          "pcs_cert_id"
+        ],
+        "properties": {
+          "pcs_cert_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "project_type": {
+            "enum": [
+              "new_pv_storage",
+              "storage_addon_existing_pv"
+            ]
+          }
+        },
+        "required": [
+          "project_type"
+        ]
+      },
+      "then": {
+        "required": [
+          "pv_kw_dc",
+          "pv_inverter_kw_ac"
+        ],
+        "properties": {
+          "pv_kw_dc": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "pv_inverter_kw_ac": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "project_type": {
+            "const": "storage_addon_existing_pv"
+          }
+        },
+        "required": [
+          "project_type"
+        ]
+      },
+      "then": {
+        "required": [
+          "existing_approved_der_kw_ac"
+        ],
+        "properties": {
+          "existing_approved_der_kw_ac": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  ]
+}
