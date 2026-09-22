@@ -1,0 +1,171 @@
+{
+  "schema_version": "sun-daddy.bess-snapshot.v1",
+  "exported_at": "2026-09-21T15:30:00-06:00",
+  "project": {
+    "id": "proj_fixture_layton_retail_001",
+    "name": "Layton Retail Fixture",
+    "customer_id": "cust_fixture_001",
+    "address": "123 Commerce Dr",
+    "city": "Layton",
+    "state": "UT",
+    "zip": "84041",
+    "timezone": "America/Denver"
+  },
+  "meter": {
+    "id": "meter_fixture_001",
+    "label": "Main service",
+    "address": "123 Commerce Dr",
+    "building_type": "retail",
+    "pre_rate_id": "rate_rmp_ut_6",
+    "post_rate_ids": [],
+    "pre_rate_is_post_solar": 0,
+    "billing_service_type": "bundled"
+  },
+  "pre_rate": {
+    "id": "rate_rmp_ut_6",
+    "utility": "rocky_mountain_power",
+    "schedule_code": "6",
+    "schedule_name": "General Service - Distribution Voltage",
+    "market": "UT",
+    "as_of": "2026-08-10",
+    "billing_interval_minutes": 15,
+    "customer_charge_usd_mo": 58.0,
+    "facilities_usd_per_kw": 4.36,
+    "power_usd_per_kw": {
+      "summer": 14.49,
+      "winter": 12.82
+    },
+    "energy_usd_per_kwh": {
+      "summer": 0.040175,
+      "winter": 0.035527
+    },
+    "demand_definition": "max_15min_kw_pf_adjusted",
+    "notes": "Stamp from live RMP UT Sched 6 PDF before customer-facing use. Schedule 80 riders omitted."
+  },
+  "post_rate": null,
+  "segments": [
+    {
+      "start_date": "2026-07-01",
+      "end_date": "2026-07-31",
+      "month_index": 6,
+      "total_kwh": 42000,
+      "period_kwh": {
+        "peak": 0,
+        "mid-peak": 0,
+        "off-peak": 42000,
+        "super off-peak": 0
+      },
+      "peak_demand_kw": 220,
+      "export_kwh": 0,
+      "notes": "Monthly rollup for RULE_OF_THUMB path; peak_demand_kw drives power sizing when no interval CSV."
+    },
+    {
+      "start_date": "2026-06-01",
+      "end_date": "2026-06-30",
+      "month_index": 5,
+      "total_kwh": 39000,
+      "period_kwh": {
+        "off-peak": 39000
+      },
+      "peak_demand_kw": 205,
+      "export_kwh": 0
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-08-31",
+      "month_index": 7,
+      "total_kwh": 45000,
+      "period_kwh": {
+        "off-peak": 45000
+      },
+      "peak_demand_kw": 215,
+      "export_kwh": 0
+    }
+  ],
+  "hourly_kwh": null,
+  "interval_kw_optional": {
+    "quality": "RULE_OF_THUMB",
+    "interval_minutes": 15,
+    "timezone": "America/Denver",
+    "points": [
+      {
+        "ts": "2026-07-15T14:00:00-06:00",
+        "kw": 180
+      },
+      {
+        "ts": "2026-07-15T14:15:00-06:00",
+        "kw": 195
+      },
+      {
+        "ts": "2026-07-15T14:30:00-06:00",
+        "kw": 210
+      },
+      {
+        "ts": "2026-07-15T14:45:00-06:00",
+        "kw": 220
+      },
+      {
+        "ts": "2026-07-15T15:00:00-06:00",
+        "kw": 215
+      },
+      {
+        "ts": "2026-07-15T15:15:00-06:00",
+        "kw": 200
+      },
+      {
+        "ts": "2026-07-15T15:30:00-06:00",
+        "kw": 185
+      }
+    ],
+    "notes": "Example A peak event only \u2014 not a full month. Engine should accept full month/year when available."
+  },
+  "sizing": {
+    "use_case": "peak_shave",
+    "use_case_secondary": null,
+    "target_kw": 160,
+    "target_mode": "user_kw",
+    "soc_min_pct": 20,
+    "soc_max_pct": 100,
+    "rte_ac_ac": 0.9,
+    "eta_discharge": 0.95,
+    "eol_retention": 0.8,
+    "pv": {
+      "present": false,
+      "kw_dc": null,
+      "kw_ac": null
+    },
+    "interconnect": {
+      "export_limit_kw": 0,
+      "soft_export": true,
+      "service_limit_kw": 400,
+      "pcs_limit_kw": null
+    },
+    "site": {
+      "placement": "outdoor_pad",
+      "footprint_sqft_available": 200,
+      "setback_ft_assumed": 10,
+      "ul9540_required": true
+    },
+    "backup_lite": {
+      "enabled": false,
+      "critical_load_kw": null,
+      "hours": null,
+      "reserve_soc_pct": null
+    },
+    "incentives": {
+      "itc_pct": null,
+      "utility_program": null,
+      "as_of": "2026-09-21"
+    },
+    "catalog_band": "small_ci_40_100",
+    "expected_fixture_result": {
+      "example": "A",
+      "p_batt_kw": 60,
+      "e_usable_kwh": 71.25,
+      "e_nameplate_kwh": 117.2,
+      "duration_h": 1.19,
+      "catalog_snap_nameplate_kwh": 120,
+      "gross_demand_savings_usd_mo_summer": 1131
+    }
+  }
+}
