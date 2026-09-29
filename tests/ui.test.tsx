@@ -2,14 +2,14 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
-import App from "../src/App";
+import Worksheet from "../src/components/Worksheet";
 import { GROSS_DEMAND_DISCLAIMER } from "../src/sizing/copy";
 
 afterEach(() => cleanup());
 
 describe("sizer UI", () => {
   it("opens on the monthly bill, shows gross demand, and does not preselect non-export", () => {
-    render(<App />);
+    render(<Worksheet />);
     expect(screen.getByTestId("quality").textContent).toBe("RULE_OF_THUMB");
     expect(screen.getByTestId("gross-demand").textContent).toContain("1,131");
     expect(screen.getByTestId("e-usable").textContent).toContain("Needs a duration preset");
@@ -24,7 +24,7 @@ describe("sizer UI", () => {
 
   it("loads example A intervals into the locked spike", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    render(<Worksheet />);
     await user.click(screen.getByRole("button", { name: "Example A spike" }));
     expect(screen.getByTestId("quality").textContent).toBe("RULE_OF_THUMB");
     expect(screen.getByTestId("p-batt").textContent).toContain("60");

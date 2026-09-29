@@ -1,10 +1,70 @@
 # Battery Bench
 
-Commercial battery energy storage (BESS) peak-shave sizer for Rocky Mountain Power Utah **Schedule 6** (General Service – Distribution Voltage).
+Commercial battery sizing worksheet. It is not an engineering stamp or an interconnection approval.
 
-v1 sizes **peak shave only**. Time-of-use energy shift is a TODO. The app is a worksheet, not an engineering stamp or an interconnection approval.
+Two tools live here:
 
-## FACT vs RULE_OF_THUMB
+- **Hourly dispatch** (`src/dispatch/`) compares a battery stack with the same 8,760-hour load and solar on a tariff you pass in. Savings are baseline bill minus the bill with the battery.
+- **Schedule 6 worksheet** (the original screen) is a closed-form peak-shave check for Rocky Mountain Power Utah Schedule 6. That tariff is a built-in example. The hourly engine does not assume it.
+
+## Hourly dispatch model
+
+The engine takes an 8,760-hour load, optional solar, a `RateModel`, and a battery quantity. Each value is kWh during that hour, so it is also the average kW. The series is a non-leap year. Hour 0 is Monday 00:00 unless `start_weekday` is set (0 = Sunday … 6 = Saturday).
+
+### Bill
+
+- **Energy.** Every matching energy period adds its $/kWh. Non-overlapping TOU windows and stacked adders (delivery, surcharges) both work. Hours with no period are $0, and the result says so.
+- **Export.** If any matching period sets `export_rate_kwh`, the hour uses the sum of those credits. Otherwise it uses the rate’s `export_credit_kwh`.
+- **Demand.** Each component charges its $/kW times the highest hourly grid import inside its window that month. Components stack. A facilities component ignores its hour mask and uses every hour in its months.
+- **Fixed, minimum bill, tax.** The fixed charge is added every month. `min_bill_usd` floors the subtotal after export credits. `tax_rate` is a fraction (0.06 = 6%) and applies only to a positive after-minimum subtotal.
+- **Savings** = annual baseline bill − annual bill with the battery.
+
+### Battery and dispatch
+
+Usable kWh, charge kW, and discharge kW scale linearly with quantity. Round-trip efficiency defaults to **0.90**. It is split evenly: one-way efficiency is the square root, applied on charge and again on discharge. The state-of-charge window defaults to the full usable range (`soc_min` 0, `soc_max` 1) and is editable. The year starts at the bottom of the window, so savings do not include a free initial charge.
+
+Solar serves the building before the battery. The battery never exports; only unused solar does. Charge and discharge do not happen in the same hour.
+
+Strategies:
+
+| Strategy | Behavior |
+|---|---|
+| `solar_self_consumption` | Charge only from excess solar. Discharge only into on-site load. |
+| `tou_arbitrage` | Charge in the day’s cheapest priced hours. Discharge in the day’s most expensive hours when the spread covers round-trip losses. Looks 24 hours ahead so a late cheap window can serve the next peak. Hours the tariff does not price are left out of the price sort. |
+| `demand_peak_shave` | Perfect foresight inside each calendar month. Holds the lowest flat grid-import cap the battery can sustain without charging above that cap. |
+| `combined` | Holds that same cap, charges from excess solar, and uses leftover state of charge for TOU arbitrage. |
+
+Degradation defaults to **2% of usable capacity per year**. That is a planning assumption, not a warranty. The single-year dispatch uses beginning-of-life capacity. Multi-year cash flows apply degradation later.
+
+### 15-minute demand
+
+Hourly energy understates a 15-minute billing peak. Pass optional `billed_peak_kw` (12 months, January–December; null skips a month). Every demand window that month is scaled by billed peak ÷ baseline hourly peak. The same scale is used with the battery, which assumes the battery cuts the intra-hour peak in the same proportion. The result includes that caveat. It is not a 15-minute simulation.
+
+### Schedule 6 example
+
+`rmpSchedule6Rate()` rebuilds the stamped Schedule 6 facilities, power, energy, and $58 customer charge already used by the worksheet (as of 2026-08-10, before riders and tax). Callers opt in. Nothing in the simulator falls back to it.
+
+### Sweep and ranking
+
+`sweepBatteries` runs every catalog battery for quantities 1 through N. Installed cost is `cost_per_unit` for the first unit plus `cost_per_additional_unit` after that.
+
+Simple payback is installed cost ÷ first-year savings. It is blank when savings are not positive. Lifetime NPV and IRR use a default **25-year** life, a **6%** discount rate, and a **2%** rate escalator. Those three are planning defaults, not a forecast. Year-y savings scale by `(1 − degradation)^(y−1) × (1 + escalator)^(y−1)`. The cash flow is pre-tax and ignores incentives.
+
+Peak-kW reduction is the drop in the **highest hourly grid peak of the year**, not the worst month. Solar self-consumption is `(solar − export) / solar` with the battery; battery losses of stored solar count as consumed. Equivalent cycles are DC discharge ÷ usable kWh. Backup hours are usable kWh × SOC window × one-way efficiency ÷ critical load kW, or zero when the critical load is above the inverter.
+
+Ranking modes are plain objects with a `compare` function: max annual savings (default), best payback, max NPV, max self-consumption, cheapest stack that hits a peak-kW target, and cheapest stack that hits a backup-hour target. If nothing hits the target, the closest reduction or the longest backup is listed first.
+
+## Hourly sizer screen
+
+`npm run dev` opens the hourly sizer on a built-in synthetic building, solar shape, and round-number rate. Those prices are not a utility tariff. Sun Daddy search calls the worker routes above. If the export token is missing, the screen says so and the example keeps running.
+
+The screen has six ranking cards, a strategy selector, and editable efficiency, degradation, SOC window, discount rate, escalator, analysis years, max units (1–12), billed-peak calibration, peak-kW target, and backup hours. A savings-versus-kWh chart shows diminishing returns for each catalog battery. Load and solar can be pasted or uploaded as 8,760 hourly kWh values. A simple rate form replaces the loaded tariff with off-peak and on-peak energy, a facilities charge, an on-peak demand charge, a fixed charge, and an export credit. The battery table is editable. The interconnect panel stays under the ranking and is prefilled from the top pick.
+
+## Schedule 6 worksheet
+
+The Schedule 6 tab is still the closed-form peak-shave check. It does not run the hourly dispatch. Its time-of-use panel points at the hourly sizer.
+
+### FACT vs RULE_OF_THUMB
 
 Two load qualities. The badge on the result says which one you are in.
 
@@ -79,3 +139,14 @@ npm run deploy              # build, then wrangler deploy
 - `GET /api/health`
 - `GET /api/tariff` — stamped rates plus the gross-demand disclaimer
 - `POST /api/size` — body is a snapshot; response matches the sizer
+- `GET /api/sun-daddy/projects?q=` — proxy to Sun Daddy `GET /api/export/projects`
+- `GET /api/sun-daddy/project/:id` — proxy to `GET /api/export/project/:id`, normalized into the hourly model
+- `GET /api/sun-daddy/batteries` — proxy to `GET /api/export/batteries`
+
+Sun Daddy auth stays on the worker. `SUN_DADDY_BASE_URL` defaults to `https://commercial-app.pages.dev`. The bearer token is the secret `SUN_DADDY_EXPORT_TOKEN` and is not a wrangler var, not committed, and not sent to the browser. If the secret is missing, those routes return a clear “not configured” error and the rest of the app still loads.
+
+```bash
+npx wrangler secret put SUN_DADDY_EXPORT_TOKEN
+```
+
+The normalizer reads `schema_version` 1. Economics percents are divided by 100 (`6.0` = 6%). `round_trip_efficiency: null` becomes 0.90. Hourly gaps and monthly-only loads are left empty rather than shaped. Tariffs with tiered energy, percent adders, ambiguous tax, annual true-up, or conflicting delivery and TOU prices return `Could not fully price this tariff.` instead of a guessed rate. Schedule 6 is not the fallback.
