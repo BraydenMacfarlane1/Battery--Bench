@@ -1,5 +1,6 @@
 import { GROSS_DEMAND_DISCLAIMER } from "../src/sizing/copy";
 import { sizeBessSnapshot } from "../src/sizing/engine";
+import { handleSunDaddy, type SunDaddyEnv } from "../src/sun-daddy/proxy";
 import {
   CUSTOMER_CHARGE_USD_MO,
   ENERGY_USD_PER_KWH,
@@ -22,7 +23,16 @@ function json(body: unknown, status = 200, cache = "no-store"): Response {
   });
 }
 
-export async function handleRequest(request: Request, env: { ASSETS: AssetBinding }): Promise<Response> {
+export type WorkerEnv = SunDaddyEnv & { ASSETS: AssetBinding };
+
+export async function handleRequest(
+  request: Request,
+  env: WorkerEnv,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
+  const sunDaddy = await handleSunDaddy(request, env, fetchImpl);
+  if (sunDaddy) return sunDaddy;
+
   const url = new URL(request.url);
 
   if (url.pathname === "/api/health") {
@@ -79,7 +89,7 @@ export async function handleRequest(request: Request, env: { ASSETS: AssetBindin
 }
 
 export default {
-  fetch(request: Request, env: { ASSETS: AssetBinding }) {
+  fetch(request: Request, env: WorkerEnv) {
     return handleRequest(request, env);
   },
 };

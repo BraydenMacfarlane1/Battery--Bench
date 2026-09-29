@@ -10,6 +10,10 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  // Public base URL only. The export token is a secret, never a var: `npx wrangler secret put SUN_DADDY_EXPORT_TOKEN`
+  "vars": {
+    "SUN_DADDY_BASE_URL": "https://commercial-app.pages.dev"
+  },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

@@ -133,3 +133,14 @@ npm run deploy              # build, then wrangler deploy
 - `GET /api/health`
 - `GET /api/tariff` — stamped rates plus the gross-demand disclaimer
 - `POST /api/size` — body is a snapshot; response matches the sizer
+- `GET /api/sun-daddy/projects?q=` — proxy to Sun Daddy `GET /api/export/projects`
+- `GET /api/sun-daddy/project/:id` — proxy to `GET /api/export/project/:id`, normalized into the hourly model
+- `GET /api/sun-daddy/batteries` — proxy to `GET /api/export/batteries`
+
+Sun Daddy auth stays on the worker. `SUN_DADDY_BASE_URL` defaults to `https://commercial-app.pages.dev`. The bearer token is the secret `SUN_DADDY_EXPORT_TOKEN` and is not a wrangler var, not committed, and not sent to the browser. If the secret is missing, those routes return a clear “not configured” error and the rest of the app still loads.
+
+```bash
+npx wrangler secret put SUN_DADDY_EXPORT_TOKEN
+```
+
+The normalizer reads `schema_version` 1. Economics percents are divided by 100 (`6.0` = 6%). `round_trip_efficiency: null` becomes 0.90. Hourly gaps and monthly-only loads are left empty rather than shaped. Tariffs with tiered energy, percent adders, ambiguous tax, annual true-up, or conflicting delivery and TOU prices return `Could not fully price this tariff.` instead of a guessed rate. Schedule 6 is not the fallback.
