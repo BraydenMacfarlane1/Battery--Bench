@@ -1,10 +1,54 @@
 # Battery Bench
 
-Commercial battery energy storage (BESS) peak-shave sizer for Rocky Mountain Power Utah **Schedule 6** (General Service – Distribution Voltage).
+Commercial battery sizing worksheet. It is not an engineering stamp or an interconnection approval.
 
-v1 sizes **peak shave only**. Time-of-use energy shift is a TODO. The app is a worksheet, not an engineering stamp or an interconnection approval.
+Two tools live here:
 
-## FACT vs RULE_OF_THUMB
+- **Hourly dispatch** (`src/dispatch/`) compares a battery stack with the same 8,760-hour load and solar on a tariff you pass in. Savings are baseline bill minus the bill with the battery.
+- **Schedule 6 worksheet** (the original screen) is a closed-form peak-shave check for Rocky Mountain Power Utah Schedule 6. That tariff is a built-in example. The hourly engine does not assume it.
+
+## Hourly dispatch model
+
+The engine takes an 8,760-hour load, optional solar, a `RateModel`, and a battery quantity. Each value is kWh during that hour, so it is also the average kW. The series is a non-leap year. Hour 0 is Monday 00:00 unless `start_weekday` is set (0 = Sunday … 6 = Saturday).
+
+### Bill
+
+- **Energy.** Every matching energy period adds its $/kWh. Non-overlapping TOU windows and stacked adders (delivery, surcharges) both work. Hours with no period are $0, and the result says so.
+- **Export.** If any matching period sets `export_rate_kwh`, the hour uses the sum of those credits. Otherwise it uses the rate’s `export_credit_kwh`.
+- **Demand.** Each component charges its $/kW times the highest hourly grid import inside its window that month. Components stack. A facilities component ignores its hour mask and uses every hour in its months.
+- **Fixed, minimum bill, tax.** The fixed charge is added every month. `min_bill_usd` floors the subtotal after export credits. `tax_rate` is a fraction (0.06 = 6%) and applies only to a positive after-minimum subtotal.
+- **Savings** = annual baseline bill − annual bill with the battery.
+
+### Battery and dispatch
+
+Usable kWh, charge kW, and discharge kW scale linearly with quantity. Round-trip efficiency defaults to **0.90**. It is split evenly: one-way efficiency is the square root, applied on charge and again on discharge. The state-of-charge window defaults to the full usable range (`soc_min` 0, `soc_max` 1) and is editable. The year starts at the bottom of the window, so savings do not include a free initial charge.
+
+Solar serves the building before the battery. The battery never exports; only unused solar does. Charge and discharge do not happen in the same hour.
+
+Strategies:
+
+| Strategy | Behavior |
+|---|---|
+| `solar_self_consumption` | Charge only from excess solar. Discharge only into on-site load. |
+| `tou_arbitrage` | Charge in the day’s cheapest priced hours. Discharge in the day’s most expensive hours when the spread covers round-trip losses. Looks 24 hours ahead so a late cheap window can serve the next peak. Hours the tariff does not price are left out of the price sort. |
+| `demand_peak_shave` | Perfect foresight inside each calendar month. Holds the lowest flat grid-import cap the battery can sustain without charging above that cap. |
+| `combined` | Holds that same cap, charges from excess solar, and uses leftover state of charge for TOU arbitrage. |
+
+Degradation defaults to **2% of usable capacity per year**. That is a planning assumption, not a warranty. The single-year dispatch uses beginning-of-life capacity. Multi-year cash flows apply degradation later.
+
+### 15-minute demand
+
+Hourly energy understates a 15-minute billing peak. Pass optional `billed_peak_kw` (12 months, January–December; null skips a month). Every demand window that month is scaled by billed peak ÷ baseline hourly peak. The same scale is used with the battery, which assumes the battery cuts the intra-hour peak in the same proportion. The result includes that caveat. It is not a 15-minute simulation.
+
+### Schedule 6 example
+
+`rmpSchedule6Rate()` rebuilds the stamped Schedule 6 facilities, power, energy, and $58 customer charge already used by the worksheet (as of 2026-08-10, before riders and tax). Callers opt in. Nothing in the simulator falls back to it.
+
+## Schedule 6 worksheet
+
+The on-screen worksheet is still the closed-form peak-shave check. It does not run the hourly dispatch. Its time-of-use panel is still a stub.
+
+### FACT vs RULE_OF_THUMB
 
 Two load qualities. The badge on the result says which one you are in.
 
