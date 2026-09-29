@@ -30,6 +30,7 @@ export async function handleSunDaddy(
   const token = env.SUN_DADDY_EXPORT_TOKEN?.trim();
   if (!token) return json({ error: SUN_DADDY_NOT_CONFIGURED }, 503);
 
+  // Live export ids are integers ("93"). Older fixtures use strings. Both are path segments.
   if (projectId && !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) {
     return json({ error: "Project id must be letters, numbers, hyphens, or underscores." }, 400);
   }

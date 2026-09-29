@@ -33,8 +33,16 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
   }
 
   const project = asRecord(root.project) ?? root;
-  const projectId = readString(project.id) ?? readString(root.id);
-  const projectName = readString(project.name) ?? readString(project.title) ?? readString(root.name);
+  const economicsRecord = asRecord(project.economics) ?? asRecord(root.economics);
+  const projectId = readId(project.id) ?? readId(economicsRecord?.id) ?? readId(root.id);
+  const projectName =
+    readString(project.name) ??
+    readString(project.title) ??
+    readString(project.label) ??
+    readString(economicsRecord?.name) ??
+    readString(economicsRecord?.label) ??
+    readString(root.name) ??
+    readString(root.title);
 
   const load = asRecord(root.load);
   const hourlyLoad = readHourly(load?.hourly_kwh, "Load", warnings);
@@ -54,7 +62,8 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
   warnings.push(...preRate.warnings);
   for (const post of postRates) warnings.push(...post.warnings);
   const batteries = normalizeBatteryList(root.batteries, warnings);
-  const economics = normalizeEconomics(asRecord(project.economics) ?? asRecord(root.economics), warnings);
+  noteBatterySelections(economicsRecord?.batteries, batteries, warnings);
+  const economics = normalizeEconomics(economicsRecord, warnings);
 
   return {
     schema_version: schema,
@@ -90,16 +99,24 @@ export function normalizeProjectList(body: unknown): { projects: ProjectListItem
   const projects: ProjectListItem[] = [];
   for (const entry of list) {
     const record = asRecord(entry);
-    if (!record) continue;
-    const id = readString(record.id) ?? readString(record.project_id);
-    const name = readString(record.name) ?? readString(record.title) ?? readString(record.project_name) ?? id;
+    if (!record) {
+      warnings.push("A project list entry was not an object and was skipped.");
+      continue;
+    }
+    const rawId = record.id ?? record.project_id;
+    const id = readId(record.id) ?? readId(record.project_id);
+    const name =
+      readString(record.name) ?? readString(record.title) ?? readString(record.project_name) ?? readString(record.label) ?? id;
     if (!id || !name) {
-      warnings.push("A project list entry had no id and was skipped.");
+      warnings.push(skippedIdWarning(rawId, "project list entry"));
       continue;
     }
     projects.push({ id, name });
   }
-  return { projects, warnings };
+  if (list.length > 0 && projects.length === 0 && warnings.length === 0) {
+    warnings.push("The Sun Daddy project list had entries, but none included a string or number id.");
+  }
+  return { projects, warnings: dedupe(warnings) };
 }
 
 export function normalizeRatePair(rateBody: unknown, nemBody: unknown, label: string): NormalizedRate {
@@ -123,7 +140,7 @@ function buildRateModel(body: unknown, warnings: WarningBag): RateModel | null {
   const modelJson = asRecord(rate.model_json) ?? asRecord(columns.model_json);
   const seasons = readSeasons(modelJson?.seasons) ?? readSeasons(rate.seasons) ?? readSeasons(columns.seasons) ?? [];
   const name = readString(columns.name) ?? readString(rate.name) ?? undefined;
-  const id = readString(columns.id) ?? readString(rate.id) ?? undefined;
+  const id = readId(columns.id) ?? readId(rate.id) ?? readId(columns.rate_id) ?? readId(rate.rate_id) ?? undefined;
 
   const components = Array.isArray(modelJson?.components) ? modelJson.components : null;
   if (components && components.length > 0) {
@@ -499,7 +516,7 @@ function facilitiesFromSeasons(value: unknown): DemandComponent[] {
     const start = readFinite(season.start_month);
     const end = readFinite(season.end_month);
     if (rate == null || start == null || end == null) return;
-    const id = readString(season.id) ?? `season-${index + 1}`;
+    const id = readId(season.id) ?? `season-${index + 1}`;
     components.push({
       name: `Facilities ${id}`,
       season_ids: [id],
@@ -520,7 +537,11 @@ function readScope(
 ):
   | { seasonal: boolean; seasonIds?: string[]; months?: number[]; masks: { weekday: HourMask; weekend: HourMask } | null }
   | "bad" {
-  const seasonIds = readStringList(component.season_ids);
+  const seasonIds = readIdList(component.season_ids);
+  if (Array.isArray(component.season_ids) && component.season_ids.length > 0 && !seasonIds) {
+    warnings.push(`${name} had season ids that were not strings or numbers and was skipped.`);
+    return "bad";
+  }
   if (seasonIds) {
     const known = new Set(seasons.map((season) => season.id));
     const missing = seasonIds.filter((id) => !known.has(id));
@@ -617,7 +638,7 @@ function normalizeBatteryList(value: unknown, warnings: WarningBag): Battery[] {
     const charge = readFinite(record.max_charge_rate_kw);
     const discharge = readFinite(record.max_discharge_rate_kw);
     const cost = readFinite(record.cost_per_unit);
-    const name = readString(record.name) ?? readString(record.model) ?? readString(record.id);
+    const name = readString(record.name) ?? readString(record.model) ?? readId(record.id);
     if (usable == null || charge == null || discharge == null || cost == null || !name || !(usable > 0)) {
       warnings.push(`Battery ${name ?? "(unnamed)"} is missing capacity, power, or cost and was skipped.`);
       continue;
@@ -627,7 +648,7 @@ function normalizeBatteryList(value: unknown, warnings: WarningBag): Battery[] {
     if (rte == null) {
       warnings.push(`${name} has a non-numeric round-trip efficiency. The 0.90 default was used.`);
     }
-    const id = readString(record.id) ?? name;
+    const id = readId(record.id) ?? name;
     batteries.push({
       id,
       name,
@@ -762,7 +783,7 @@ function readSeasons(value: unknown): SeasonDef[] | null {
     const end = readFinite(record.end_month);
     if (start == null || end == null) return null;
     seasons.push({
-      id: readString(record.id) ?? `season-${seasons.length + 1}`,
+      id: readId(record.id) ?? `season-${seasons.length + 1}`,
       start_month: start,
       end_month: end,
     });
@@ -819,14 +840,55 @@ function readMonthList(value: unknown): number[] | null {
   return months;
 }
 
-function readStringList(value: unknown): string[] | null {
+function readIdList(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length === 0) return null;
   const ids: string[] = [];
   for (const entry of value) {
-    if (typeof entry !== "string" || entry.length === 0) return null;
-    ids.push(entry);
+    const id = readId(entry);
+    if (!id) return null;
+    ids.push(id);
   }
   return ids;
+}
+
+/** Sun Daddy ids are integers in the live export and strings in older fixtures. */
+function readId(value: unknown): string | null {
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function skippedIdWarning(value: unknown, label: string): string {
+  if (value == null || (typeof value === "string" && value.trim().length === 0)) {
+    return `A ${label} had no id and was skipped.`;
+  }
+  const type = Array.isArray(value) ? "array" : typeof value;
+  return `A ${label} had an id of type ${type}, which is not a string or number, and was skipped.`;
+}
+
+function noteBatterySelections(value: unknown, batteries: readonly Battery[], warnings: WarningBag): void {
+  if (value == null) return;
+  if (!Array.isArray(value)) {
+    warnings.push("Project battery selections were not an array and were skipped.");
+    return;
+  }
+  const known = new Set(batteries.map((battery) => battery.id));
+  for (const entry of value) {
+    const record = asRecord(entry);
+    if (!record) {
+      warnings.push("A project battery selection was not an object and was skipped.");
+      continue;
+    }
+    const id = readId(record.battery_id) ?? readId(record.id);
+    if (!id) {
+      warnings.push(skippedIdWarning(record.battery_id ?? record.id, "project battery selection"));
+      continue;
+    }
+    if (known.size > 0 && !known.has(id)) {
+      warnings.push(`Project battery ${id} was not in the battery list.`);
+    }
+  }
 }
 
 function matchSeasonsToMonths(seasons: SeasonDef[], months: number[] | null): string[] | undefined {

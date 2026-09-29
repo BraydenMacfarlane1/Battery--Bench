@@ -108,6 +108,104 @@ describe("Sun Daddy proxy", () => {
     expect(batteryBody.batteries[0].round_trip_efficiency).toBe(0.9);
   });
 
+  it("forwards numeric project ids to /api/export/project/:id", async () => {
+    const seen: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.includes("/api/export/projects")) {
+        return jsonResponse({
+          projects: [
+            {
+              id: 93,
+              name: "Solar + Battery - Carport",
+              label: "Synthetic carport",
+              project_type: "solar_battery",
+              status: "complete",
+              customer_id: 80,
+              customer_name: "Synthetic Customer",
+              site_address: "100 Synthetic Way",
+              utility: "Synthetic Power",
+              pre_rate_id: null,
+              updated_at: "2026-03-02 12:00:00",
+            },
+            { id: "proj_b", name: "String id" },
+          ],
+        });
+      }
+      if (url.endsWith("/api/export/project/93")) {
+        return jsonResponse({
+          schema_version: 1,
+          project: {
+            economics: {
+              id: 93,
+              name: "Solar + Battery - Carport",
+              discount_rate: 6.0,
+              analysis_period: 20,
+              batteries: [{ battery_id: 7, quantity: 2, charge_source: "solar" }],
+            },
+          },
+          batteries: [
+            {
+              id: 7,
+              name: "Synthetic cabinet",
+              usable_capacity_kwh: 10,
+              max_charge_rate_kw: 5,
+              max_discharge_rate_kw: 5,
+              cost_per_unit: 1000,
+              round_trip_efficiency: null,
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/api/export/batteries")) {
+        return jsonResponse({
+          batteries: [
+            {
+              id: 7,
+              name: "Synthetic cabinet",
+              usable_capacity_kwh: 10,
+              max_charge_rate_kw: 5,
+              max_discharge_rate_kw: 5,
+              cost_per_unit: 1000,
+              cost_per_additional_unit: 800,
+              round_trip_efficiency: null,
+            },
+          ],
+        });
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    };
+    const env = { ASSETS: assets, SUN_DADDY_EXPORT_TOKEN: "test-token", SUN_DADDY_BASE_URL: "https://export.example.test" };
+    const list = await handleRequest(new Request("https://bess.example/api/sun-daddy/projects"), env, fetchImpl);
+    expect(list.status).toBe(200);
+    const listBody = (await list.json()) as { projects: { id: string; name: string }[]; warnings: string[] };
+    expect(listBody.warnings).toEqual([]);
+    expect(listBody.projects).toEqual([
+      { id: "93", name: "Solar + Battery - Carport" },
+      { id: "proj_b", name: "String id" },
+    ]);
+
+    const project = await handleRequest(new Request("https://bess.example/api/sun-daddy/project/93"), env, fetchImpl);
+    expect(project.status).toBe(200);
+    const projectBody = (await project.json()) as {
+      normalized: { project_id: string | null; batteries: { id: string }[]; economics: { discount_rate: number | null } };
+    };
+    expect(projectBody.normalized.project_id).toBe("93");
+    expect(projectBody.normalized.batteries[0].id).toBe("7");
+    expect(projectBody.normalized.economics.discount_rate).toBeCloseTo(0.06);
+
+    const batteries = await handleRequest(new Request("https://bess.example/api/sun-daddy/batteries"), env, fetchImpl);
+    const batteryBody = (await batteries.json()) as { batteries: { id: string; round_trip_efficiency: number }[] };
+    expect(batteryBody.batteries[0].id).toBe("7");
+    expect(batteryBody.batteries[0].round_trip_efficiency).toBe(0.9);
+    expect(seen).toEqual([
+      "https://export.example.test/api/export/projects",
+      "https://export.example.test/api/export/project/93",
+      "https://export.example.test/api/export/batteries",
+    ]);
+  });
+
   it("does not echo the token when Sun Daddy rejects it", async () => {
     const fetchImpl: typeof fetch = async () => jsonResponse({ error: "nope" }, 401);
     const response = await handleRequest(

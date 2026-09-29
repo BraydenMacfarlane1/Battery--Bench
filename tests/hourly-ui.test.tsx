@@ -66,6 +66,58 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("top-pick")).toBeTruthy();
   });
 
+  it("opens a project when the list id is numeric", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/sun-daddy/projects")) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: 93, name: "Solar + Battery - Carport", customer_id: 80, pre_rate_id: null }],
+            warnings: [],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.includes("/api/sun-daddy/project/93")) {
+        return new Response(
+          JSON.stringify({
+            normalized: {
+              schema_version: 1,
+              project_id: "93",
+              project_name: "Solar + Battery - Carport",
+              warnings: [],
+              load_kwh: null,
+              monthly_kwh: null,
+              billed_peak_kw: new Array<number | null>(12).fill(null),
+              solar_kwh: null,
+              solar_series: [],
+              pre_rate: { rate: null, warnings: [] },
+              post_rates: [],
+              batteries: [],
+              economics: {
+                discount_rate: 0.06,
+                rate_escalator: null,
+                federal_tax_rate: null,
+                state_tax_rate: null,
+                analysis_period: 20,
+                system_size_kw: 120,
+              },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: "Solar + Battery - Carport" }));
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/api/sun-daddy/project/93"))).toBe(true);
+    expect(screen.getByText("Loaded Solar + Battery - Carport.")).toBeTruthy();
+  });
+
   it("opens the Schedule 6 worksheet from the tool tab", async () => {
     const user = userEvent.setup();
     render(<App />);
