@@ -44,6 +44,16 @@ Hourly energy understates a 15-minute billing peak. Pass optional `billed_peak_k
 
 `rmpSchedule6Rate()` rebuilds the stamped Schedule 6 facilities, power, energy, and $58 customer charge already used by the worksheet (as of 2026-08-10, before riders and tax). Callers opt in. Nothing in the simulator falls back to it.
 
+### Sweep and ranking
+
+`sweepBatteries` runs every catalog battery for quantities 1 through N. Installed cost is `cost_per_unit` for the first unit plus `cost_per_additional_unit` after that.
+
+Simple payback is installed cost ÷ first-year savings. It is blank when savings are not positive. Lifetime NPV and IRR use a default **25-year** life, a **6%** discount rate, and a **2%** rate escalator. Those three are planning defaults, not a forecast. Year-y savings scale by `(1 − degradation)^(y−1) × (1 + escalator)^(y−1)`. The cash flow is pre-tax and ignores incentives.
+
+Peak-kW reduction is the drop in the **highest hourly grid peak of the year**, not the worst month. Solar self-consumption is `(solar − export) / solar` with the battery; battery losses of stored solar count as consumed. Equivalent cycles are DC discharge ÷ usable kWh. Backup hours are usable kWh × SOC window × one-way efficiency ÷ critical load kW, or zero when the critical load is above the inverter.
+
+Ranking modes are plain objects with a `compare` function: max annual savings (default), best payback, max NPV, max self-consumption, cheapest stack that hits a peak-kW target, and cheapest stack that hits a backup-hour target. If nothing hits the target, the closest reduction or the longest backup is listed first.
+
 ## Schedule 6 worksheet
 
 The on-screen worksheet is still the closed-form peak-shave check. It does not run the hourly dispatch. Its time-of-use panel is still a stub.
