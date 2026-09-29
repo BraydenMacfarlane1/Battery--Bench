@@ -429,6 +429,62 @@ td input { min-width: 0; }
 .flag-warn .flag-sev { color: var(--amber); }
 .flag-info .flag-sev { color: #334155; }
 
+.override {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.7fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 12px;
+}
+
+.override label { margin-top: 0; }
+
+.override .text-button,
+.override .meta { margin-bottom: 8px; }
+
+.backup-result { margin-top: 14px; }
+
+.backup-headline {
+  margin: 4px 0 0;
+  font-family: "Source Serif 4", Georgia, serif;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.backup-limits {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.backup-limits li { margin: 4px 0; }
+
+.pick-table tbody tr { cursor: pointer; }
+
+.pick-table tbody tr.is-selected td { background: var(--amber-bg); }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.legend i {
+  display: inline-block;
+  width: 12px;
+  height: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
 .footer { margin-top: 18px; }
 
 .sr-only {
@@ -444,7 +500,7 @@ td input { min-width: 0; }
 
 @media (max-width: 860px) {
   h1 { font-size: 36px; }
-  .layout, .form-grid, .metrics { grid-template-columns: 1fr; }
+  .layout, .form-grid, .metrics, .override { grid-template-columns: 1fr; }
   .dollars { font-size: 34px; }
   .flag { grid-template-columns: 1fr; }
 }

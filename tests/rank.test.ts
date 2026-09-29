@@ -15,6 +15,9 @@ import {
   MAX_ANNUAL_SAVINGS,
   MAX_LIFETIME_NPV,
   MAX_SELF_CONSUMPTION,
+  batteryMissesConstraint,
+  bestQuantityForBattery,
+  constraintMissLabel,
   rankCandidates,
   rankingMode,
   sweepBatteries,
@@ -232,6 +235,61 @@ describe("ranking modes", () => {
     ];
     expect(ids(rankCandidates(short, BACKUP_DURATION, { backup_target_hours: 8 }))).toEqual(["longer", "shorter"]);
     expect(() => rankCandidates(list, BACKUP_DURATION)).toThrow(/backup/);
+  });
+
+  it("defaults a battery to its best viable quantity, or 1 when none qualify", () => {
+    const ranked = rankCandidates(
+      [
+        candidate({
+          battery: battery({ id: "a" }),
+          quantity: 1,
+          peak_reduction_kw: 10,
+          installed_cost_usd: 100,
+          annual_savings_usd: 10,
+        }),
+        candidate({
+          battery: battery({ id: "a" }),
+          quantity: 2,
+          peak_reduction_kw: 40,
+          installed_cost_usd: 200,
+          annual_savings_usd: 50,
+        }),
+        candidate({
+          battery: battery({ id: "a" }),
+          quantity: 3,
+          peak_reduction_kw: 50,
+          installed_cost_usd: 150,
+          annual_savings_usd: 40,
+        }),
+      ],
+      CHEAPEST_PEAK_TARGET,
+      { target_peak_reduction_kw: 30 },
+    );
+    expect(bestQuantityForBattery(ranked, "a", CHEAPEST_PEAK_TARGET, { target_peak_reduction_kw: 30 })).toBe(3);
+    expect(constraintMissLabel(ranked.find((row) => row.quantity === 1)!, CHEAPEST_PEAK_TARGET, { target_peak_reduction_kw: 30 })).toMatch(
+      /peak target/,
+    );
+    expect(batteryMissesConstraint(ranked, "a", CHEAPEST_PEAK_TARGET, { target_peak_reduction_kw: 30 })).toBe(false);
+
+    const missed = rankCandidates(
+      [
+        candidate({ battery: battery({ id: "short" }), quantity: 2, peak_reduction_kw: 5, backup_hours: 1 }),
+        candidate({ battery: battery({ id: "short" }), quantity: 1, peak_reduction_kw: 4, backup_hours: 1 }),
+      ],
+      CHEAPEST_PEAK_TARGET,
+      { target_peak_reduction_kw: 30 },
+    );
+    expect(bestQuantityForBattery(missed, "short", CHEAPEST_PEAK_TARGET, { target_peak_reduction_kw: 30 })).toBe(1);
+    expect(batteryMissesConstraint(missed, "short", CHEAPEST_PEAK_TARGET, { target_peak_reduction_kw: 30 })).toBe(true);
+
+    const bySavings = rankCandidates(
+      [
+        candidate({ battery: battery({ id: "a" }), quantity: 1, annual_savings_usd: 10 }),
+        candidate({ battery: battery({ id: "a" }), quantity: 2, annual_savings_usd: 50 }),
+      ],
+      MAX_ANNUAL_SAVINGS,
+    );
+    expect(bestQuantityForBattery(bySavings, "a", MAX_ANNUAL_SAVINGS, {})).toBe(2);
   });
 
   it("accepts a caller-supplied mode", () => {

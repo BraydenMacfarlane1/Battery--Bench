@@ -118,6 +118,70 @@ describe("hourly sizer", () => {
     expect(screen.getByText("Loaded Solar + Battery - Carport.")).toBeTruthy();
   });
 
+  it("keeps a chosen battery while the ranking mode changes, then resets to the best", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    expect(screen.getByTestId("selection-badge").textContent).toBe("Best for Max annual savings");
+    expect(screen.getByTestId("backup-headline").textContent).toMatch(/^About \d+\.\d hours \(conservative \d+\.\d hours\)$/);
+    const headline = screen.getByTestId("backup-headline").textContent ?? "";
+    const typical = headline.match(/About (\d+\.\d) hours/)?.[1];
+    expect(document.querySelector("tr.is-selected")?.textContent).toContain(`${typical} h`);
+    expect(screen.getByTestId("monthly-bills").textContent).toContain("Jan");
+    expect(screen.getByTestId("dispatch-view").textContent).toMatch(/peak-load day/i);
+    expect(screen.getByTestId("backup-column")).toBeTruthy();
+    expect((screen.getByLabelText("Percent of building load") as HTMLInputElement).value).toBe("30");
+    expect(screen.getByRole("button", { name: "Backup loads" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Percent of load" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText(/Hourly resolution only/)).toBeTruthy();
+    expect(screen.getByText(/Surge and motor-start loads are ignored/)).toBeTruthy();
+    expect(screen.getByText(/islanding-capable/)).toBeTruthy();
+
+    const title = screen.getByTestId("selection-title").textContent ?? "";
+    const pick = title.includes("Small cabinet") ? "large" : "small";
+    const pickName = pick === "large" ? "Large cabinet" : "Small cabinet";
+    await user.selectOptions(screen.getByLabelText("Battery"), pick);
+    expect(screen.getByTestId("selection-title").textContent).toContain(pickName);
+    expect(screen.getByTestId("selection-compare").textContent).toMatch(/Compared with the best/);
+    expect(screen.getByTestId("comparison-table").textContent).toContain("Small cabinet");
+    expect(screen.getByTestId("comparison-table").textContent).toContain("Large cabinet");
+
+    await user.click(screen.getByRole("tab", { name: "Best payback / ROI" }));
+    expect(screen.getByTestId("active-mode").textContent).toBe("Best payback / ROI");
+    expect(screen.getByTestId("selection-title").textContent).toContain(pickName);
+    expect(within(screen.getByTestId("comparison-table")).getAllByRole("row").length).toBeGreaterThan(3);
+
+    await user.click(screen.getByRole("button", { name: "Reset to best" }));
+    expect(screen.getByTestId("selection-badge").textContent).toBe("Best for Best payback / ROI");
+    expect(screen.queryByRole("button", { name: "Reset to best" })).toBeNull();
+  });
+
+  it("lets a battery that misses the peak target stay selected", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("tab", { name: "Cheapest peak-kW reduction" }));
+    const target = screen.getByLabelText("Peak reduction target (kW)");
+    await user.clear(target);
+    await user.type(target, "9999");
+    const batterySelect = screen.getByLabelText("Battery");
+    expect(within(batterySelect).getByRole("option", { name: /Small cabinet/ }).textContent).toMatch(/misses ranking constraint/i);
+    await user.selectOptions(batterySelect, "small");
+    expect((screen.getByLabelText("Quantity") as HTMLSelectElement).value).toBe("1");
+    expect(screen.getByTestId("constraint-note").textContent).toMatch(/Misses the peak target/);
+    expect(screen.getByTestId("selection-title").textContent).toContain("Small cabinet");
+    expect(screen.getByTestId("monthly-bills")).toBeTruthy();
+  });
+
+  it("switches backup to the whole building and still estimates a duration", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Whole building" }));
+    expect(screen.getByRole("button", { name: "Whole building" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("backup-headline").textContent).toMatch(/About \d+\.\d hours \(conservative \d+\.\d hours\)/);
+    expect(screen.getByTestId("backup-result").textContent).toMatch(/Whole building load/);
+    await user.click(screen.getByRole("tab", { name: "Backup duration" }));
+    expect(screen.getByTestId("comparison-table").textContent).toMatch(/\d+\.\d h/);
+  });
+
   it("opens the Schedule 6 worksheet from the tool tab", async () => {
     const user = userEvent.setup();
     render(<App />);

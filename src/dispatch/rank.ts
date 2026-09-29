@@ -1,3 +1,4 @@
+import { estimateBackup, type BackupEstimate, type BackupScenario } from "./backup";
 import { resolveRoundTrip } from "./simulate";
 import {
   DEFAULT_ANALYSIS_YEARS,
@@ -30,10 +31,12 @@ export type CandidateMetrics = {
   self_consumption_pct: number | null;
   equivalent_cycles: number;
   /**
-   * Hours the SOC window can carry `critical_load_kw` after one-way efficiency.
-   * Zero when that load exceeds discharge power. Null when no critical load was supplied.
+   * Typical backup hours: the median duration across every start hour, capped at 72.
+   * Null when no backup scenario was requested. Matches `estimateBackup` `hours_typical`.
    */
   backup_hours: number | null;
+  /** Full outage estimate behind `backup_hours`. Null when backup was not requested. */
+  backup_estimate?: BackupEstimate | null;
   warnings: string[];
 };
 
@@ -54,7 +57,16 @@ export type SweepInput = {
   rate_escalator?: number;
   /** Default 25. */
   analysis_years?: number;
+  /**
+   * Fixed critical load, every hour. Used only when `backup` is omitted.
+   * A load above discharge power reports zero backup hours.
+   */
   critical_load_kw?: number;
+  /**
+   * Outage load, starting charge, and solar credit for backup hours.
+   * When set, this replaces `critical_load_kw`.
+   */
+  backup?: BackupScenario;
 };
 
 export type RankContext = {
@@ -144,7 +156,7 @@ export const BACKUP_DURATION: RankingMode = {
   id: "backup_duration",
   label: "Backup duration",
   description:
-    "Cheapest stack that covers the target hours of critical load. If none do, the longest backup comes first. Critical load above the inverter counts as zero hours.",
+    "Cheapest stack whose typical backup covers the target. Typical backup is the median hours across every start hour, using the backup settings, capped at 72 hours. If none cover the target, the longest backup comes first.",
   compare: (a, b, ctx) => {
     const target = ctx.backup_target_hours;
     if (target == null || !Number.isFinite(target) || !(target > 0)) {
@@ -184,6 +196,56 @@ export function rankCandidates(
   return [...candidates].sort((a, b) => mode.compare(a, b, ctx));
 }
 
+/** True when the row satisfies the active mode's peak or backup target. Modes without a target always pass. */
+export function meetsRankingConstraint(row: CandidateMetrics, mode: RankingMode, ctx: RankContext = {}): boolean {
+  if (mode.id === CHEAPEST_PEAK_TARGET.id) {
+    const target = ctx.target_peak_reduction_kw;
+    if (target == null || !Number.isFinite(target)) return true;
+    return row.peak_reduction_kw >= target - 1e-6;
+  }
+  if (mode.id === BACKUP_DURATION.id) {
+    const target = ctx.backup_target_hours;
+    if (target == null || !Number.isFinite(target)) return true;
+    return row.backup_hours != null && row.backup_hours >= target - 1e-9;
+  }
+  return true;
+}
+
+export function constraintMissLabel(row: CandidateMetrics, mode: RankingMode, ctx: RankContext = {}): string | null {
+  if (meetsRankingConstraint(row, mode, ctx)) return null;
+  if (mode.id === CHEAPEST_PEAK_TARGET.id) return `Misses the peak target (${ctx.target_peak_reduction_kw} kW)`;
+  if (mode.id === BACKUP_DURATION.id) return `Misses the backup target (${ctx.backup_target_hours} h)`;
+  return "Misses the ranking constraint";
+}
+
+/** True when every quantity of this battery misses the active target. */
+export function batteryMissesConstraint(
+  ranked: readonly CandidateMetrics[],
+  batteryId: string,
+  mode: RankingMode,
+  ctx: RankContext = {},
+): boolean {
+  const rows = ranked.filter((row) => row.battery.id === batteryId);
+  return rows.length > 0 && rows.every((row) => !meetsRankingConstraint(row, mode, ctx));
+}
+
+/**
+ * Best-ranked quantity of this battery that meets the active target.
+ * Quantity 1 when none of its quantities are viable.
+ */
+export function bestQuantityForBattery(
+  ranked: readonly CandidateMetrics[],
+  batteryId: string,
+  mode: RankingMode,
+  ctx: RankContext = {},
+): number {
+  for (const row of ranked) {
+    if (row.battery.id !== batteryId) continue;
+    if (meetsRankingConstraint(row, mode, ctx)) return row.quantity;
+  }
+  return 1;
+}
+
 export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
   if (!Number.isInteger(input.max_quantity) || input.max_quantity < 1) {
     throw new Error("max_quantity must be an integer of 1 or more.");
@@ -194,10 +256,7 @@ export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
   if (!(discountRate > -1)) throw new Error("discount rate must be greater than -100%.");
   const socMin = input.soc_min ?? 0;
   const socMax = input.soc_max ?? 1;
-  const critical = input.critical_load_kw;
-  if (critical != null && (!(critical > 0) || !Number.isFinite(critical))) {
-    throw new Error("critical_load_kw must be greater than zero when it is set.");
-  }
+  const scenario = backupScenario(input);
 
   const ranked: CandidateMetrics[] = [];
   for (const battery of input.batteries) {
@@ -215,6 +274,17 @@ export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
         start_weekday: input.start_weekday,
         include_hourly: false,
       });
+      const backup = scenario
+        ? estimateBackup({
+            load_kwh: input.load_kwh,
+            solar_kwh: input.solar_kwh,
+            battery,
+            quantity,
+            soc_min: socMin,
+            soc_max: socMax,
+            ...scenario,
+          })
+        : null;
       ranked.push(
         metricsFromSimulation({
           battery,
@@ -224,14 +294,27 @@ export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
           discountRate,
           escalator,
           years,
-          socMin,
-          socMax,
-          criticalLoadKw: critical ?? null,
+          backup,
         }),
       );
     }
   }
   return ranked;
+}
+
+function backupScenario(input: SweepInput): BackupScenario | null {
+  if (input.backup) return input.backup;
+  if (input.critical_load_kw == null) return null;
+  if (!(input.critical_load_kw > 0) || !Number.isFinite(input.critical_load_kw)) {
+    throw new Error("critical_load_kw must be greater than zero when it is set.");
+  }
+  return {
+    load_mode: "backup_loads",
+    shape: "fixed_kw",
+    critical_load_kw: input.critical_load_kw,
+    start_soc: 1,
+    include_solar: false,
+  };
 }
 
 function metricsFromSimulation(args: {
@@ -242,9 +325,7 @@ function metricsFromSimulation(args: {
   discountRate: number;
   escalator: number;
   years: number;
-  socMin: number;
-  socMax: number;
-  criticalLoadKw: number | null;
+  backup: BackupEstimate | null;
 }): CandidateMetrics {
   const cost = installedCost(args.battery, args.quantity);
   const savings = args.simulation.annual_savings_usd;
@@ -260,12 +341,6 @@ function metricsFromSimulation(args: {
   const solar = args.simulation.totals.solar_kwh;
   const eta = Math.sqrt(resolveRoundTrip(args.battery));
   const usable = args.battery.usable_capacity_kwh * args.quantity;
-  const deliverableAc = usable * (args.socMax - args.socMin) * eta;
-  const dischargeKw = args.battery.max_discharge_rate_kw * args.quantity;
-  let backup: number | null = null;
-  if (args.criticalLoadKw != null) {
-    backup = args.criticalLoadKw > dischargeKw + 1e-9 ? 0 : deliverableAc / args.criticalLoadKw;
-  }
   let self: number | null = null;
   if (solar > 1e-6) {
     const ratio = (solar - args.simulation.totals.grid_export_kwh) / solar;
@@ -286,7 +361,8 @@ function metricsFromSimulation(args: {
     ),
     self_consumption_pct: self,
     equivalent_cycles: usable > 0 ? args.simulation.totals.discharge_ac_kwh / eta / usable : 0,
-    backup_hours: backup,
+    backup_hours: args.backup ? args.backup.hours_typical : null,
+    backup_estimate: args.backup,
     warnings: args.simulation.warnings,
   };
 }
