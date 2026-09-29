@@ -54,9 +54,15 @@ Peak-kW reduction is the drop in the **highest hourly grid peak of the year**, n
 
 Ranking modes are plain objects with a `compare` function: max annual savings (default), best payback, max NPV, max self-consumption, cheapest stack that hits a peak-kW target, and cheapest stack that hits a backup-hour target. If nothing hits the target, the closest reduction or the longest backup is listed first.
 
+## Hourly sizer screen
+
+`npm run dev` opens the hourly sizer on a built-in synthetic building, solar shape, and round-number rate. Those prices are not a utility tariff. Sun Daddy search calls the worker routes above. If the export token is missing, the screen says so and the example keeps running.
+
+The screen has six ranking cards, a strategy selector, and editable efficiency, degradation, SOC window, discount rate, escalator, analysis years, max units (1–12), billed-peak calibration, peak-kW target, and backup hours. A savings-versus-kWh chart shows diminishing returns for each catalog battery. Load and solar can be pasted or uploaded as 8,760 hourly kWh values. A simple rate form replaces the loaded tariff with off-peak and on-peak energy, a facilities charge, an on-peak demand charge, a fixed charge, and an export credit. The battery table is editable. The interconnect panel stays under the ranking and is prefilled from the top pick.
+
 ## Schedule 6 worksheet
 
-The on-screen worksheet is still the closed-form peak-shave check. It does not run the hourly dispatch. Its time-of-use panel is still a stub.
+The Schedule 6 tab is still the closed-form peak-shave check. It does not run the hourly dispatch. Its time-of-use panel points at the hourly sizer.
 
 ### FACT vs RULE_OF_THUMB
 
