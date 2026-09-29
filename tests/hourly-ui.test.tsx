@@ -23,7 +23,7 @@ describe("hourly sizer", () => {
     const table = screen.getByTestId("comparison-table");
     expect(within(table).getAllByRole("row").length).toBeGreaterThan(3);
     expect(screen.getByTestId("sizer-caveat").textContent).toMatch(/billed|hourly/i);
-    expect(screen.getByText(/not an engineering stamp/)).toBeTruthy();
+    expect(screen.getAllByText(/not an engineering stamp/).length).toBeGreaterThan(0);
   });
 
   it("switches ranking mode without dropping the comparison", async () => {
@@ -34,6 +34,9 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("top-pick").textContent).toContain("Best payback / ROI");
     await user.click(screen.getByRole("tab", { name: "Backup duration" }));
     expect(screen.getByTestId("active-mode").textContent).toBe("Backup duration");
+    await user.click(screen.getByRole("button", { name: "Schedule 6 worksheet" }));
+    await user.click(screen.getByRole("button", { name: "Hourly sizer" }));
+    expect(screen.getByTestId("active-mode").textContent).toBe("Backup duration");
   });
 
   it("rejects a short pasted load and keeps the example ranking", async () => {
@@ -42,7 +45,7 @@ describe("hourly sizer", () => {
     const before = screen.getByTestId("top-pick").textContent;
     await user.type(screen.getByLabelText("Load kWh, 8,760 values"), "1, 2, 3");
     await user.click(screen.getByRole("button", { name: "Use pasted load" }));
-    expect(screen.getByTestId("sizer-caveat").textContent).toContain("8,760");
+    expect(screen.getByRole("alert").textContent).toContain("8,760");
     expect(screen.getByTestId("top-pick").textContent).toBe(before);
   });
 

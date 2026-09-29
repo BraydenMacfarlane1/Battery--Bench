@@ -380,6 +380,11 @@ export default function CatalogSizer() {
             <button type="button" className="text-button" onClick={() => readSolarFile(solarText)}>
               Use pasted solar
             </button>
+            {studyWarnings.length > 0 ? (
+              <p className="warn-line" role="alert">
+                {studyWarnings.join(" ")}
+              </p>
+            ) : null}
             <label className="upload">
               Solar CSV
               <input

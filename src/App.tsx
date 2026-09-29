@@ -14,7 +14,12 @@ export default function App() {
           Schedule 6 worksheet
         </button>
       </nav>
-      {tab === "hourly" ? <CatalogSizer /> : <Worksheet />}
+      <div style={{ display: tab === "hourly" ? "block" : "none" }}>
+        <CatalogSizer />
+      </div>
+      <div style={{ display: tab === "worksheet" ? "block" : "none" }}>
+        <Worksheet />
+      </div>
     </>
   );
 }
