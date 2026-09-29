@@ -1,18 +1,33 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MODEL_ASSUMPTIONS } from "../dispatch/assumptions";
-import { HOURS_PER_YEAR, NO_HOURS, hoursBetween } from "../dispatch/calendar";
+import {
+  BACKUP_ASSUMPTIONS,
+  formatBackupHeadline,
+  formatBackupPowerLimit,
+  type BackupEstimate,
+  type BackupLoadMode,
+  type BackupLoadShape,
+  type BackupScenario,
+} from "../dispatch/backup";
+import { DAYS_IN_MONTH, HOURS_PER_YEAR, NO_HOURS, hoursBetween } from "../dispatch/calendar";
 import {
   BACKUP_DURATION,
   CHEAPEST_PEAK_TARGET,
   RANKING_MODES,
+  batteryMissesConstraint,
+  bestQuantityForBattery,
+  constraintMissLabel,
   rankCandidates,
   rankingMode,
   sweepBatteries,
   type CandidateMetrics,
+  type RankContext,
+  type RankingMode,
 } from "../dispatch/rank";
 import { parseBilledPeaks, parseHourlyNumbers } from "../dispatch/series-input";
+import { simulateDispatch } from "../dispatch/simulate";
 import { syntheticExample } from "../dispatch/synthetic-example";
-import type { Battery, DispatchStrategy, RateModel } from "../dispatch/types";
+import type { Battery, DispatchStrategy, RateModel, SimulationResult } from "../dispatch/types";
 import { normalizeProjectList } from "../sun-daddy/normalize";
 import type { NormalizedStudy, ProjectListItem } from "../sun-daddy/types";
 import { InterconnectPanel } from "./InterconnectPanel";
@@ -88,6 +103,12 @@ export default function CatalogSizer() {
   const [maxQuantity, setMaxQuantity] = useState("3");
   const [criticalKw, setCriticalKw] = useState("25");
   const [backupHours, setBackupHours] = useState("4");
+  const [backupMode, setBackupMode] = useState<BackupLoadMode>("backup_loads");
+  const [backupShape, setBackupShape] = useState<BackupLoadShape>("percent_of_load");
+  const [backupPercent, setBackupPercent] = useState("30");
+  const [outageSoc, setOutageSoc] = useState("100");
+  const [outageSolar, setOutageSolar] = useState(false);
+  const [override, setOverride] = useState<{ batteryId: string; quantity: number } | null>(null);
   const [peakTarget, setPeakTarget] = useState("20");
   const [billedText, setBilledText] = useState("140");
   const [loadText, setLoadText] = useState("");
@@ -119,8 +140,15 @@ export default function CatalogSizer() {
       const yearsCount = Number(analysisYears);
       const discountRate = Number(discount) / 100;
       const rateEscalator = Number(escalator) / 100;
-      const critical = Number(criticalKw);
       const billed = parseBilledPeaks(billedText);
+      const backup = backupScenarioFromInputs({
+        backupMode,
+        backupShape,
+        backupPercent,
+        criticalKw,
+        outageSoc,
+        outageSolar,
+      });
       if (!(quantity >= 1) || !Number.isInteger(quantity) || quantity > 12) {
         return { ok: false as const, error: "Max units must be a whole number from 1 to 12." };
       }
@@ -140,9 +168,22 @@ export default function CatalogSizer() {
         discount_rate: discountRate,
         rate_escalator: rateEscalator,
         analysis_years: yearsCount,
-        critical_load_kw: critical,
+        backup,
       });
-      return { ok: true as const, swept };
+      return {
+        ok: true as const,
+        swept,
+        sim: {
+          load_kwh: loadKwh,
+          solar_kwh: solarKwh,
+          rate: activeRate,
+          strategy,
+          soc_min: min,
+          soc_max: max,
+          billed_peak_kw: billed ?? undefined,
+          backup,
+        },
+      };
     } catch (error) {
       return { ok: false as const, error: error instanceof Error ? error.message : "Could not rank these batteries." };
     }
@@ -158,6 +199,11 @@ export default function CatalogSizer() {
     analysisYears,
     maxQuantity,
     criticalKw,
+    backupMode,
+    backupShape,
+    backupPercent,
+    outageSoc,
+    outageSolar,
     billedText,
     loadKwh,
     solarKwh,
@@ -177,19 +223,49 @@ export default function CatalogSizer() {
     if (!sweep.ok) return sweep;
     try {
       const mode = rankingMode(modeId);
-      const ranked = rankCandidates(sweep.swept, mode, {
+      const ctx = {
         target_peak_reduction_kw: Number(peakTarget),
         backup_target_hours: Number(backupHours),
-      });
-      return { ok: true as const, ranked, swept: sweep.swept, mode };
+      };
+      const ranked = rankCandidates(sweep.swept, mode, ctx);
+      return { ok: true as const, ranked, swept: sweep.swept, mode, ctx, sim: sweep.sim };
     } catch (error) {
       return { ok: false as const, error: error instanceof Error ? error.message : "Could not rank these batteries." };
     }
   }, [sweep, modeId, peakTarget, backupHours]);
 
-  const top = model.ok ? model.ranked[0] : null;
+  const selection = model.ok ? resolveSelection(model.ranked, override) : null;
   const chartSeries = model.ok ? seriesByBattery(model.swept) : [];
   const buildingPeak = loadKwh.reduce((max, value) => Math.max(max, value), 0);
+  const selected = selection?.selected ?? null;
+
+  const detail = useMemo(() => {
+    if (!model.ok || !selected) return null;
+    try {
+      return simulateDispatch({
+        load_kwh: model.sim.load_kwh,
+        solar_kwh: model.sim.solar_kwh,
+        rate: model.sim.rate,
+        battery: selected.battery,
+        quantity: selected.quantity,
+        strategy: model.sim.strategy,
+        soc_min: model.sim.soc_min,
+        soc_max: model.sim.soc_max,
+        billed_peak_kw: model.sim.billed_peak_kw,
+        include_hourly: true,
+      });
+    } catch {
+      return null;
+    }
+  }, [model, selected]);
+
+  useEffect(() => {
+    if (!override || !model.ok) return;
+    const alive = model.ranked.some(
+      (row) => row.battery.id === override.batteryId && row.quantity === override.quantity,
+    );
+    if (!alive) setOverride(null);
+  }, [model, override]);
 
   async function searchProjects() {
     setBusy(true);
@@ -290,10 +366,30 @@ export default function CatalogSizer() {
     }
   }
 
+  const rankingBest = selection?.top ?? null;
   const unmetPeak =
-    model.ok && modeId === CHEAPEST_PEAK_TARGET.id && top != null && top.peak_reduction_kw + 1e-6 < Number(peakTarget);
+    model.ok &&
+    modeId === CHEAPEST_PEAK_TARGET.id &&
+    rankingBest != null &&
+    rankingBest.peak_reduction_kw + 1e-6 < Number(peakTarget);
   const unmetBackup =
-    model.ok && modeId === BACKUP_DURATION.id && top != null && (top.backup_hours ?? 0) + 1e-9 < Number(backupHours);
+    model.ok &&
+    modeId === BACKUP_DURATION.id &&
+    rankingBest != null &&
+    (rankingBest.backup_hours ?? 0) + 1e-9 < Number(backupHours);
+
+  function chooseBattery(batteryId: string) {
+    if (!model.ok) return;
+    setOverride({
+      batteryId,
+      quantity: bestQuantityForBattery(model.ranked, batteryId, model.mode, model.ctx),
+    });
+  }
+
+  function chooseQuantity(quantity: number) {
+    if (!selected) return;
+    setOverride({ batteryId: selected.battery.id, quantity });
+  }
 
   return (
     <div className="wrap">
@@ -302,8 +398,9 @@ export default function CatalogSizer() {
           <p className="kicker">Hourly dispatch · Utah, California, Nevada, Idaho</p>
           <h1>Battery Bench</h1>
           <p className="lede">
-            Pick the battery and quantity with the best bill savings, then flip the ranking to size by payback, lifetime
-            value, solar self-consumption, a peak-kW target, or backup hours.
+            Rank the catalog by bill savings, payback, lifetime value, solar self-consumption, a peak-kW target, or backup
+            hours. The detail view starts on the best pick. Choose any other battery and quantity to hold that result
+            while the ranking changes.
           </p>
         </div>
       </header>
@@ -494,10 +591,6 @@ export default function CatalogSizer() {
               <input value={maxQuantity} onChange={(event) => setMaxQuantity(event.target.value)} />
             </label>
             <label>
-              Critical load (kW)
-              <input value={criticalKw} onChange={(event) => setCriticalKw(event.target.value)} />
-            </label>
-            <label>
               Backup target (h)
               <input value={backupHours} onChange={(event) => setBackupHours(event.target.value)} />
             </label>
@@ -518,6 +611,66 @@ export default function CatalogSizer() {
             One billed-peak number is repeated for every month. Twelve numbers are January through December. Blank uses
             the hourly peak.
           </p>
+
+          <fieldset className="presets">
+            <legend>Backup duration</legend>
+            <div className="segmented" role="group" aria-label="Outage load">
+              <button
+                type="button"
+                aria-pressed={backupMode === "whole_building"}
+                onClick={() => setBackupMode("whole_building")}
+              >
+                Whole building
+              </button>
+              <button
+                type="button"
+                aria-pressed={backupMode === "backup_loads"}
+                onClick={() => setBackupMode("backup_loads")}
+              >
+                Backup loads
+              </button>
+            </div>
+            <div className="segmented" role="group" aria-label="Backup load shape">
+              <button
+                type="button"
+                aria-pressed={backupShape === "percent_of_load"}
+                onClick={() => setBackupShape("percent_of_load")}
+              >
+                Percent of load
+              </button>
+              <button type="button" aria-pressed={backupShape === "fixed_kw"} onClick={() => setBackupShape("fixed_kw")}>
+                Fixed kW
+              </button>
+            </div>
+            <div className="form-grid">
+              <label>
+                Percent of building load
+                <input value={backupPercent} onChange={(event) => setBackupPercent(event.target.value)} />
+              </label>
+              <label>
+                Fixed critical load (kW)
+                <input value={criticalKw} onChange={(event) => setCriticalKw(event.target.value)} />
+              </label>
+              <label>
+                Outage starting charge (%)
+                <input value={outageSoc} onChange={(event) => setOutageSoc(event.target.value)} />
+              </label>
+            </div>
+            <p className="meta">
+              {backupMode === "whole_building"
+                ? "Whole building uses the full hourly load. Percent and fixed kW apply when you switch to backup loads."
+                : backupShape === "percent_of_load"
+                  ? "Backup loads use this percent of each hour of the building load."
+                  : "Backup loads use this fixed kW in every hour."}
+            </p>
+            <label className="check">
+              <input type="checkbox" checked={outageSolar} onChange={(event) => setOutageSolar(event.target.checked)} />
+              Include solar during outage (optimistic)
+            </label>
+            <p className="note">
+              Grid-tied inverters shut down without islanding-capable equipment. Leave this off unless the site can island.
+            </p>
+          </fieldset>
 
           <div className="table-wrap">
             <table>
@@ -604,28 +757,58 @@ export default function CatalogSizer() {
             ))}
           </div>
           {model.ok ? <p className="note">{model.mode.description}</p> : null}
-          {model.ok && top ? (
+          {unmetPeak ? (
+            <p className="note">Nothing in the list hits the peak-kW target. The best row is the closest reduction.</p>
+          ) : null}
+          {unmetBackup ? (
+            <p className="note">Nothing in the list covers the backup-hour target. The best row is the longest backup.</p>
+          ) : null}
+          {model.ok && selection && selected ? (
             <>
-              <div className="money" data-testid="top-pick">
-                <p className="money-kicker">Top pick · {model.mode.label}</p>
-                <p className="dollars">
-                  {top.quantity} × {top.battery.name}
-                </p>
-                <p className="rate-line">
-                  {money(top.annual_savings_usd)} / yr · payback {years(top.simple_payback_years)} · NPV {money(top.npv_usd)} ·{" "}
-                  {money(top.installed_cost_usd)} installed
-                </p>
-                {unmetPeak ? (
-                  <p className="disclaimer">Nothing in the list hits the peak-kW target. This is the closest reduction.</p>
-                ) : null}
-                {unmetBackup ? (
-                  <p className="disclaimer">Nothing in the list covers the backup-hour target. This is the longest backup.</p>
-                ) : null}
-              </div>
+              <BatteryOverride
+                ranked={model.ranked}
+                swept={model.swept}
+                mode={model.mode}
+                ctx={model.ctx}
+                selected={selected}
+                pinned={selection.pinned}
+                onBattery={chooseBattery}
+                onQuantity={chooseQuantity}
+                onReset={() => setOverride(null)}
+              />
+              <SelectionCard
+                selected={selected}
+                best={selection.top}
+                modeLabel={model.mode.label}
+                miss={constraintMissLabel(selected, model.mode, model.ctx)}
+              />
+              <BackupResult
+                estimate={selected.backup_estimate ?? null}
+                backupMode={backupMode}
+                backupShape={backupShape}
+                backupPercent={backupPercent}
+                criticalKw={criticalKw}
+                outageSoc={outageSoc}
+                outageSolar={outageSolar}
+              />
+              {detail ? <MonthlyBills simulation={detail} /> : null}
+              {detail?.hourly ? (
+                <DispatchDay
+                  load={model.sim.load_kwh}
+                  solar={model.sim.solar_kwh}
+                  discharge={detail.hourly.discharge_ac_kwh}
+                  gridImport={detail.hourly.grid_import_kwh}
+                />
+              ) : null}
               <SavingsChart series={chartSeries} />
               <div className="table-wrap">
-                <table data-testid="comparison-table">
-                  <caption>Comparison</caption>
+                <table data-testid="comparison-table" className="pick-table">
+                  <caption>
+                    Comparison
+                    {modeId === BACKUP_DURATION.id
+                      ? ". Backup hours are the typical outage duration, the same figure as the detail view."
+                      : ""}
+                  </caption>
                   <thead>
                     <tr>
                       <th>Battery</th>
@@ -636,28 +819,36 @@ export default function CatalogSizer() {
                       <th>Peak cut</th>
                       <th>Self-use</th>
                       <th>Cycles</th>
-                      <th>Backup</th>
+                      <th data-testid="backup-column">Backup</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {model.ranked.map((row) => (
-                      <tr key={`${row.battery.id}-${row.quantity}`}>
-                        <td>{row.battery.name}</td>
-                        <td>{row.quantity}</td>
-                        <td>{money(row.annual_savings_usd)}</td>
-                        <td>{years(row.simple_payback_years)}</td>
-                        <td>{money(row.npv_usd)}</td>
-                        <td>{row.peak_reduction_kw.toFixed(1)} kW</td>
-                        <td>{row.self_consumption_pct == null ? "—" : `${Math.round(row.self_consumption_pct * 100)}%`}</td>
-                        <td>{row.equivalent_cycles.toFixed(0)}</td>
-                        <td>{row.backup_hours == null ? "—" : `${row.backup_hours.toFixed(1)} h`}</td>
-                      </tr>
-                    ))}
+                    {model.ranked.map((row) => {
+                      const picked = row.battery.id === selected.battery.id && row.quantity === selected.quantity;
+                      return (
+                        <tr
+                          key={`${row.battery.id}-${row.quantity}`}
+                          className={picked ? "is-selected" : undefined}
+                          aria-selected={picked}
+                          onClick={() => setOverride({ batteryId: row.battery.id, quantity: row.quantity })}
+                        >
+                          <td>{row.battery.name}</td>
+                          <td>{row.quantity}</td>
+                          <td>{money(row.annual_savings_usd)}</td>
+                          <td>{years(row.simple_payback_years)}</td>
+                          <td>{money(row.npv_usd)}</td>
+                          <td>{row.peak_reduction_kw.toFixed(1)} kW</td>
+                          <td>{row.self_consumption_pct == null ? "—" : `${Math.round(row.self_consumption_pct * 100)}%`}</td>
+                          <td>{row.equivalent_cycles.toFixed(0)}</td>
+                          <td>{row.backup_hours == null ? "—" : `${row.backup_hours.toFixed(1)} h`}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
               <div className="hint" data-testid="sizer-caveat">
-                {(top.warnings.length > 0 ? top.warnings : ["Demand uses the hourly peak unless billed peaks are set."])
+                {(selected.warnings.length > 0 ? selected.warnings : ["Demand uses the hourly peak unless billed peaks are set."])
                   .slice(0, 2)
                   .join(" ")}{" "}
                 {studyWarnings.join(" ")} NPV is pre-tax and ignores incentives. Degradation is {degradation}% per year,
@@ -681,11 +872,11 @@ export default function CatalogSizer() {
       </div>
 
       <InterconnectPanel
-        usableKwh={top ? top.battery.usable_capacity_kwh * top.quantity : null}
-        dischargeKw={top ? top.battery.max_discharge_rate_kw * top.quantity : null}
-        aggregateKw={top ? top.battery.max_discharge_rate_kw * top.quantity : null}
-        unitKwh={top ? top.battery.usable_capacity_kwh : null}
-        unitCount={top ? top.quantity : null}
+        usableKwh={selected ? selected.battery.usable_capacity_kwh * selected.quantity : null}
+        dischargeKw={selected ? selected.battery.max_discharge_rate_kw * selected.quantity : null}
+        aggregateKw={selected ? selected.battery.max_discharge_rate_kw * selected.quantity : null}
+        unitKwh={selected ? selected.battery.usable_capacity_kwh : null}
+        unitCount={selected ? selected.quantity : null}
         customerPeakKw={buildingPeak > 0 ? buildingPeak : null}
       />
 
@@ -694,6 +885,377 @@ export default function CatalogSizer() {
       </footer>
     </div>
   );
+}
+
+function BatteryOverride({
+  ranked,
+  swept,
+  mode,
+  ctx,
+  selected,
+  pinned,
+  onBattery,
+  onQuantity,
+  onReset,
+}: {
+  ranked: readonly CandidateMetrics[];
+  swept: readonly CandidateMetrics[];
+  mode: RankingMode;
+  ctx: RankContext;
+  selected: CandidateMetrics;
+  pinned: boolean;
+  onBattery: (batteryId: string) => void;
+  onQuantity: (quantity: number) => void;
+  onReset: () => void;
+}) {
+  const batteries = uniqueBatteries(swept);
+  const nameCount = new Map<string, number>();
+  for (const battery of batteries) nameCount.set(battery.name, (nameCount.get(battery.name) ?? 0) + 1);
+  const quantities = swept
+    .filter((row) => row.battery.id === selected.battery.id)
+    .map((row) => row.quantity)
+    .sort((a, b) => a - b);
+  return (
+    <div className="override" data-testid="battery-override">
+      <label>
+        Battery
+        <select value={selected.battery.id} onChange={(event) => onBattery(event.target.value)}>
+          {batteries.map((battery) => {
+            const base = (nameCount.get(battery.name) ?? 0) > 1 ? `${battery.name} (${battery.id})` : battery.name;
+            const misses = batteryMissesConstraint(ranked, battery.id, mode, ctx);
+            return (
+              <option key={battery.id} value={battery.id}>
+                {misses ? `${base} — misses ranking constraint` : base}
+              </option>
+            );
+          })}
+        </select>
+      </label>
+      <label>
+        Quantity
+        <select value={String(selected.quantity)} onChange={(event) => onQuantity(Number(event.target.value))}>
+          {quantities.map((quantity) => {
+            const row = swept.find((entry) => entry.battery.id === selected.battery.id && entry.quantity === quantity);
+            const misses = row ? constraintMissLabel(row, mode, ctx) : null;
+            return (
+              <option key={quantity} value={quantity}>
+                {misses ? `${quantity} — misses ranking constraint` : String(quantity)}
+              </option>
+            );
+          })}
+        </select>
+      </label>
+      {pinned ? (
+        <button type="button" className="text-button" onClick={onReset}>
+          Reset to best
+        </button>
+      ) : (
+        <p className="meta">Showing the best for this mode.</p>
+      )}
+    </div>
+  );
+}
+
+function SelectionCard({
+  selected,
+  best,
+  modeLabel,
+  miss,
+}: {
+  selected: CandidateMetrics;
+  best: CandidateMetrics;
+  modeLabel: string;
+  miss: string | null;
+}) {
+  const isBest = selected.battery.id === best.battery.id && selected.quantity === best.quantity;
+  const self =
+    selected.self_consumption_pct == null ? "—" : `${Math.round(selected.self_consumption_pct * 100)}%`;
+  return (
+    <div className="money" data-testid="top-pick">
+      <p className="money-kicker" data-testid="selection-badge">
+        {isBest ? `Best for ${modeLabel}` : "Selected battery"}
+      </p>
+      <p className="dollars" data-testid="selection-title">
+        {selected.quantity} × {selected.battery.name}
+      </p>
+      <p className="rate-line">
+        {money(selected.annual_savings_usd)} / yr · payback {years(selected.simple_payback_years)} · NPV{" "}
+        {money(selected.npv_usd)} · peak cut {selected.peak_reduction_kw.toFixed(1)} kW · solar self-consumption {self} ·{" "}
+        {money(selected.installed_cost_usd)} installed
+      </p>
+      {isBest ? null : (
+        <p className="rate-line" data-testid="selection-compare">
+          {compareWithBest(selected, best, modeLabel)}
+        </p>
+      )}
+      {miss ? (
+        <p className="disclaimer" data-testid="constraint-note">
+          {miss}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function BackupResult({
+  estimate,
+  backupMode,
+  backupShape,
+  backupPercent,
+  criticalKw,
+  outageSoc,
+  outageSolar,
+}: {
+  estimate: BackupEstimate | null;
+  backupMode: BackupLoadMode;
+  backupShape: BackupLoadShape;
+  backupPercent: string;
+  criticalKw: string;
+  outageSoc: string;
+  outageSolar: boolean;
+}) {
+  if (!estimate) return null;
+  const requested = Number(outageSoc) / 100;
+  const clamped = Number.isFinite(requested) && Math.abs(requested - estimate.start_soc) > 0.001;
+  const power = formatBackupPowerLimit(estimate);
+  return (
+    <div className="backup-result" data-testid="backup-result">
+      <p className="kicker">Backup duration</p>
+      <p className="backup-headline" data-testid="backup-headline">
+        {formatBackupHeadline(estimate)}
+      </p>
+      <p className="meta">{backupScenarioText(backupMode, backupShape, backupPercent, criticalKw, estimate, outageSolar)}</p>
+      {clamped ? (
+        <p className="note">Starting charge is clamped to {Math.round(estimate.start_soc * 100)}% by the SOC window.</p>
+      ) : null}
+      {estimate.horizon_reached ? (
+        <p className="note">At least one start hour is still going at the {estimate.horizon_hours}-hour cap.</p>
+      ) : null}
+      {power ? <p className="warn-line">{power}</p> : null}
+      <ul className="point-list">
+        <li>
+          <span>Average load</span>
+          <span>{hoursOrEmpty(estimate.hours_at_average_load)}</span>
+        </li>
+        <li>
+          <span>Peak-load hour</span>
+          <span>{hoursOrEmpty(estimate.hours_at_peak_load)}</span>
+        </li>
+        <li>
+          <span>Worst start</span>
+          <span>{estimate.hours_min.toFixed(1)} h</span>
+        </li>
+        <li>
+          <span>Typical start</span>
+          <span>{estimate.hours_typical.toFixed(1)} h</span>
+        </li>
+        <li>
+          <span>Conservative</span>
+          <span>{estimate.hours_conservative.toFixed(1)} h</span>
+        </li>
+        <li>
+          <span>Best start</span>
+          <span>{estimate.hours_max.toFixed(1)} h</span>
+        </li>
+      </ul>
+      <ul className="backup-limits">
+        {BACKUP_ASSUMPTIONS.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function MonthlyBills({ simulation }: { simulation: SimulationResult }) {
+  return (
+    <div className="table-wrap">
+      <table data-testid="monthly-bills">
+        <caption>Monthly bills</caption>
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th>Baseline</th>
+            <th>With battery</th>
+            <th>Savings</th>
+          </tr>
+        </thead>
+        <tbody>
+          {simulation.baseline.months.map((month, index) => {
+            const withBattery = simulation.with_battery.months[index];
+            return (
+              <tr key={month.month}>
+                <td>{MONTH_SHORT[index]}</td>
+                <td>{money(month.total_usd)}</td>
+                <td>{money(withBattery?.total_usd ?? 0)}</td>
+                <td>{money(month.total_usd - (withBattery?.total_usd ?? 0))}</td>
+              </tr>
+            );
+          })}
+          <tr>
+            <td>Year</td>
+            <td>{money(simulation.baseline.total_usd)}</td>
+            <td>{money(simulation.with_battery.total_usd)}</td>
+            <td>{money(simulation.annual_savings_usd)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DispatchDay({
+  load,
+  solar,
+  discharge,
+  gridImport,
+}: {
+  load: readonly number[];
+  solar: readonly number[];
+  discharge: readonly number[];
+  gridImport: readonly number[];
+}) {
+  let peakHour = 0;
+  let peak = -Infinity;
+  for (let hour = 0; hour < load.length; hour += 1) {
+    if (load[hour] > peak) {
+      peak = load[hour];
+      peakHour = hour;
+    }
+  }
+  const dayStart = peakHour - (peakHour % 24);
+  const stamp = monthStamp(dayStart);
+  const hours = Array.from({ length: 24 }, (_, hour) => hour);
+  const slice = (series: readonly number[]) => hours.map((hour) => series[dayStart + hour] ?? 0);
+  return (
+    <div data-testid="dispatch-view">
+      <DispatchChart
+        label={`Dispatch on the peak-load day, ${stamp.month} ${stamp.day}`}
+        series={[
+          { name: "Load", color: "#1c1712", values: slice(load) },
+          { name: "Solar", color: "#8a5710", values: slice(solar) },
+          { name: "Discharge", color: "#1d4a38", values: slice(discharge) },
+          { name: "Grid import", color: "#8d3414", values: slice(gridImport) },
+        ]}
+      />
+      <p className="meta">Hourly dispatch for the day that contains the highest building load. Grid import is after the battery.</p>
+    </div>
+  );
+}
+
+function backupScenarioFromInputs(input: {
+  backupMode: BackupLoadMode;
+  backupShape: BackupLoadShape;
+  backupPercent: string;
+  criticalKw: string;
+  outageSoc: string;
+  outageSolar: boolean;
+}): BackupScenario {
+  const start = Number(input.outageSoc) / 100;
+  if (!Number.isFinite(start) || start < 0 || start > 1) {
+    throw new Error("Outage starting charge must be from 0% to 100%.");
+  }
+  return {
+    load_mode: input.backupMode,
+    shape: input.backupMode === "backup_loads" ? input.backupShape : undefined,
+    critical_load_kw:
+      input.backupMode === "backup_loads" && input.backupShape === "fixed_kw" ? Number(input.criticalKw) : undefined,
+    critical_load_fraction:
+      input.backupMode === "backup_loads" && input.backupShape === "percent_of_load"
+        ? Number(input.backupPercent) / 100
+        : undefined,
+    start_soc: start,
+    include_solar: input.outageSolar,
+  };
+}
+
+function resolveSelection(
+  ranked: readonly CandidateMetrics[],
+  override: { batteryId: string; quantity: number } | null,
+): { top: CandidateMetrics; selected: CandidateMetrics; pinned: boolean } | null {
+  const top = ranked[0];
+  if (!top) return null;
+  const match = override
+    ? ranked.find((row) => row.battery.id === override.batteryId && row.quantity === override.quantity)
+    : undefined;
+  return { top, selected: match ?? top, pinned: match != null };
+}
+
+function uniqueBatteries(rows: readonly CandidateMetrics[]): Battery[] {
+  const seen = new Map<string, Battery>();
+  for (const row of rows) {
+    if (!seen.has(row.battery.id)) seen.set(row.battery.id, row.battery);
+  }
+  return [...seen.values()];
+}
+
+function compareWithBest(selected: CandidateMetrics, best: CandidateMetrics, modeLabel: string): string {
+  const savings = signedMoney(selected.annual_savings_usd - best.annual_savings_usd);
+  let payback = "payback unavailable";
+  if (selected.simple_payback_years != null && best.simple_payback_years != null) {
+    payback = `${signedYears(selected.simple_payback_years - best.simple_payback_years)} payback`;
+  }
+  return `Compared with the best for ${modeLabel}: ${savings} / yr savings, ${payback}.`;
+}
+
+function signedMoney(value: number): string {
+  const formatted = formatUsd(value);
+  if (value > 0.004 && !formatted.startsWith("+")) return `+${formatted}`;
+  return formatted;
+}
+
+function signedYears(value: number): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(1)} yr`;
+}
+
+function backupScenarioText(
+  backupMode: BackupLoadMode,
+  backupShape: BackupLoadShape,
+  backupPercent: string,
+  criticalKw: string,
+  estimate: BackupEstimate,
+  outageSolar: boolean,
+): string {
+  const charge = `${Math.round(estimate.start_soc * 100)}% charge`;
+  const solar = outageSolar ? "Solar is credited (optimistic)." : "Solar is not credited.";
+  if (backupMode === "whole_building") return `Whole building load, starting at ${charge}. ${solar}`;
+  if (backupShape === "percent_of_load") {
+    return `Backup loads at ${backupPercent}% of each hour, starting at ${charge}. ${solar}`;
+  }
+  return `Backup loads at ${criticalKw} kW, starting at ${charge}. ${solar}`;
+}
+
+function hoursOrEmpty(hours: number | null): string {
+  if (hours == null) return "No load";
+  return `${hours.toFixed(1)} h`;
+}
+
+const MONTH_LONG = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+function monthStamp(hour: number): { month: string; day: number } {
+  let cursor = 0;
+  for (let month = 0; month < 12; month += 1) {
+    const hours = DAYS_IN_MONTH[month] * 24;
+    if (hour < cursor + hours) return { month: MONTH_LONG[month], day: Math.floor((hour - cursor) / 24) + 1 };
+    cursor += hours;
+  }
+  return { month: "December", day: 31 };
 }
 
 function buildSimpleRate(input: {
@@ -794,6 +1356,62 @@ function seriesByBattery(rows: CandidateMetrics[]): { name: string; points: { kw
     ...group,
     points: group.points.sort((a, b) => a.kwh - b.kwh),
   }));
+}
+
+function DispatchChart({
+  label,
+  series,
+}: {
+  label: string;
+  series: { name: string; color: string; values: number[] }[];
+}) {
+  const width = 640;
+  const height = 220;
+  const padL = 44;
+  const padR = 12;
+  const padT = 16;
+  const padB = 28;
+  const flat = series.flatMap((entry) => entry.values);
+  const maxKw = Math.max(1, ...flat);
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const xAt = (hour: number) => padL + (hour / 23) * plotW;
+  const yAt = (kw: number) => padT + (1 - Math.max(0, kw) / maxKw) * plotH;
+  return (
+    <div>
+      <svg className="chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
+        <title>{label}</title>
+        <line className="chart-axis" x1={padL} y1={padT + plotH} x2={width - padR} y2={padT + plotH} />
+        <line className="chart-axis" x1={padL} y1={padT} x2={padL} y2={padT + plotH} />
+        {series.map((entry) => (
+          <polyline
+            key={entry.name}
+            fill="none"
+            stroke={entry.color}
+            strokeWidth="2.2"
+            points={entry.values.map((value, hour) => `${xAt(hour).toFixed(1)},${yAt(value).toFixed(1)}`).join(" ")}
+          />
+        ))}
+        <text className="chart-label" x={padL} y={height - 8}>
+          0:00
+        </text>
+        <text className="chart-label" x={width - padR - 36} y={height - 8}>
+          23:00
+        </text>
+        <text className="chart-label" x={4} y={padT + 8}>
+          {Math.round(maxKw)} kW
+        </text>
+      </svg>
+      <ul className="legend">
+        {series.map((entry) => (
+          <li key={entry.name}>
+            <i style={{ background: entry.color }} />
+            {entry.name}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function SavingsChart({ series }: { series: { name: string; points: { kwh: number; savings: number }[] }[] }) {

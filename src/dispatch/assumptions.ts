@@ -18,4 +18,5 @@ export const MODEL_ASSUMPTIONS = [
   "The combined strategy holds the peak-shave cap, charges from excess solar, and uses leftover state of charge for TOU arbitrage.",
   "The simulated year uses beginning-of-life usable capacity. Year-by-year degradation is applied in the multi-year cash flows, not by re-dispatching degraded capacity.",
   "If billed monthly peaks are provided, every demand window that month is scaled by billed peak ÷ baseline hourly peak.",
+  "Backup duration is a separate hourly outage estimate. It does not change the bill. Its limits are listed with the backup result.",
 ] as const;

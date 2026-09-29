@@ -30,6 +30,15 @@ export {
   simplePaybackYears,
 } from "./economics";
 export {
+  BACKUP_ASSUMPTIONS,
+  BACKUP_HORIZON_HOURS,
+  DEFAULT_BACKUP_LOAD_FRACTION,
+  estimateBackup,
+  formatBackupHeadline,
+  formatBackupPowerLimit,
+} from "./backup";
+export type { BackupEstimate, BackupEstimateInput, BackupLoadMode, BackupLoadShape, BackupScenario } from "./backup";
+export {
   BACKUP_DURATION,
   BEST_PAYBACK,
   CHEAPEST_PEAK_TARGET,
@@ -38,6 +47,10 @@ export {
   MAX_LIFETIME_NPV,
   MAX_SELF_CONSUMPTION,
   RANKING_MODES,
+  batteryMissesConstraint,
+  bestQuantityForBattery,
+  constraintMissLabel,
+  meetsRankingConstraint,
   rankCandidates,
   rankingMode,
   sweepBatteries,
