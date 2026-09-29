@@ -13,6 +13,7 @@ import {
 import { parseBilledPeaks, parseHourlyNumbers } from "../dispatch/series-input";
 import { syntheticExample } from "../dispatch/synthetic-example";
 import type { Battery, DispatchStrategy, RateModel } from "../dispatch/types";
+import { normalizeProjectList } from "../sun-daddy/normalize";
 import type { NormalizedStudy, ProjectListItem } from "../sun-daddy/types";
 import { InterconnectPanel } from "./InterconnectPanel";
 import { formatUsd } from "../sizing/tariff";
@@ -195,14 +196,22 @@ export default function CatalogSizer() {
     setSunMessage(null);
     try {
       const response = await fetch(`/api/sun-daddy/projects?q=${encodeURIComponent(query)}`);
-      const body = (await response.json()) as { error?: string; projects?: ProjectListItem[]; warnings?: string[] };
+      const body = (await response.json()) as {
+        error?: string;
+        projects?: unknown;
+        warnings?: string[];
+      };
       if (!response.ok) {
         setProjects([]);
         setSunMessage(body.error ?? "Sun Daddy isn't available. The synthetic example still runs on this screen.");
         return;
       }
-      setProjects(body.projects ?? []);
-      setSunMessage(body.warnings?.[0] ?? ((body.projects ?? []).length === 0 ? "No matching projects." : null));
+      const listed = normalizeProjectList(Array.isArray(body.projects) ? body.projects : []);
+      setProjects(listed.projects);
+      const serverWarnings = Array.isArray(body.warnings) ? body.warnings : [];
+      const warning =
+        serverWarnings.find((entry) => typeof entry === "string" && entry.trim().length > 0) ?? listed.warnings[0];
+      setSunMessage(warning ?? (listed.projects.length === 0 ? "No matching projects." : null));
     } catch {
       setProjects([]);
       setSunMessage("Sun Daddy isn't available from this session. Paste hourly CSVs or keep the synthetic example.");
