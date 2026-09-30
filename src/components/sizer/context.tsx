@@ -14,7 +14,6 @@ export type StudyMeta = {
 };
 
 export type SizerContextValue = {
-  surface: "wizard" | "interconnect";
   step: WizardStepId;
   maxReached: WizardStepId;
   canNext: boolean;
@@ -28,6 +27,10 @@ export type SizerContextValue = {
   sunMessage: string | null;
   sunError: boolean;
   loadedNote: string | null;
+  /** Why step 1 cannot advance after a Sun Daddy project load. */
+  missingLoadMessage: string | null;
+  /** Measured vs estimated, when the study names load.hourly_source. */
+  loadSourceBadge: string | null;
   groups: CustomerGroup[];
   openCustomerKey: string | null;
   setOpenCustomerKey: (key: string | null) => void;

@@ -1,11 +1,6 @@
-import { useState } from "react";
 import CatalogSizer from "./components/CatalogSizer";
-import Worksheet from "./components/Worksheet";
-
-type Surface = "wizard" | "worksheet" | "interconnect";
 
 export default function App() {
-  const [surface, setSurface] = useState<Surface>("wizard");
   return (
     <div className="app">
       <header className="topbar">
@@ -22,30 +17,9 @@ export default function App() {
               <p className="brand-tag">Commercial battery sizing</p>
             </div>
           </div>
-          <nav className="app-tabs" aria-label="Tools">
-            <button type="button" aria-pressed={surface === "wizard"} onClick={() => setSurface("wizard")}>
-              Hourly sizer
-            </button>
-            <button type="button" className="tab-quiet" aria-pressed={surface === "worksheet"} onClick={() => setSurface("worksheet")}>
-              Schedule 6 worksheet
-            </button>
-            <button
-              type="button"
-              className="tab-quiet"
-              aria-pressed={surface === "interconnect"}
-              onClick={() => setSurface("interconnect")}
-            >
-              Interconnection
-            </button>
-          </nav>
         </div>
       </header>
-      <div hidden={surface === "worksheet"}>
-        <CatalogSizer surface={surface === "interconnect" ? "interconnect" : "wizard"} />
-      </div>
-      <div hidden={surface !== "worksheet"}>
-        <Worksheet />
-      </div>
+      <CatalogSizer />
     </div>
   );
 }
