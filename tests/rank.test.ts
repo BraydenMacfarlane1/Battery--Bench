@@ -15,9 +15,12 @@ import {
   MAX_ANNUAL_SAVINGS,
   MAX_LIFETIME_NPV,
   MAX_SELF_CONSUMPTION,
+  MAX_SWEEP_POINTS,
   batteryMissesConstraint,
   bestQuantityForBattery,
   constraintMissLabel,
+  planSweepQuantities,
+  quantitiesForBattery,
   rankCandidates,
   rankingMode,
   sweepBatteries,
@@ -404,5 +407,87 @@ describe("sweep", () => {
     expect(swept[0].self_consumption_pct).toBeGreaterThan(0.5);
     expect(swept[0].self_consumption_pct).toBeLessThanOrEqual(1);
     expect(swept[0].equivalent_cycles).toBeGreaterThan(50);
+  });
+
+  it("scales quantities to the site peak and caps the catalog", () => {
+    const peakKw = 120;
+    const rightSized = battery();
+    expect(quantitiesForBattery(rightSized, 30, 2)).toEqual([1, 2]);
+    expect(quantitiesForBattery(rightSized, 30, 1)).toEqual([1]);
+
+    const block = battery({
+      id: "block",
+      usable_capacity_kwh: 3854,
+      max_charge_rate_kw: 1927,
+      max_discharge_rate_kw: 1927,
+    });
+    const small = battery({
+      id: "small",
+      usable_capacity_kwh: 13.5,
+      max_charge_rate_kw: 11.5,
+      max_discharge_rate_kw: 11.5,
+    });
+    expect(quantitiesForBattery(block, peakKw, 24)).toEqual([1]);
+    expect(quantitiesForBattery(block, peakKw, 24, [2])).toEqual([1, 2]);
+
+    const smallQuantities = quantitiesForBattery(small, peakKw, 24);
+    expect(smallQuantities[0]).toBe(1);
+    expect(smallQuantities.length).toBeGreaterThan(1);
+    expect(smallQuantities.length).toBeLessThanOrEqual(6);
+    expect(smallQuantities[smallQuantities.length - 1] * small.max_discharge_rate_kw).toBeGreaterThanOrEqual(peakKw);
+
+    const plans = planSweepQuantities(
+      [...Array.from({ length: 5 }, (_, index) => ({ ...small, id: `small-${index}` })), block],
+      peakKw,
+      24,
+    );
+    expect(plans[5]).toEqual([1]);
+    expect(plans.reduce((sum, list) => sum + list.length, 0)).toBeLessThanOrEqual(MAX_SWEEP_POINTS);
+    for (const list of plans.slice(0, 5)) {
+      expect(list[0]).toBe(1);
+      expect(list[list.length - 1] * small.max_discharge_rate_kw).toBeGreaterThanOrEqual(peakKw);
+    }
+
+    const load = new Array<number>(HOURS_PER_YEAR).fill(40);
+    load[100] = peakKw;
+    const swept = sweepBatteries({
+      load_kwh: load,
+      rate: demandRate(),
+      batteries: [block, small],
+      max_quantity: 24,
+      include_quantities: { block: [2] },
+      strategy: "demand_peak_shave",
+      analysis_years: 1,
+      discount_rate: 0,
+      rate_escalator: 0,
+    });
+    expect(swept.filter((row) => row.battery.id === "block").map((row) => row.quantity)).toEqual([1, 2]);
+    const smallSwept = swept.filter((row) => row.battery.id === "small").map((row) => row.quantity);
+    expect(smallSwept.length).toBeGreaterThan(1);
+    expect(smallSwept.length).toBeLessThanOrEqual(6);
+    expect(Math.max(...smallSwept) * small.max_discharge_rate_kw).toBeGreaterThanOrEqual(peakKw);
+    expect(swept.length).toBeLessThanOrEqual(MAX_SWEEP_POINTS);
+
+    const efficient = sweepBatteries({
+      load_kwh: load,
+      rate: demandRate(),
+      batteries: [battery({ round_trip_efficiency: 0.9 })],
+      max_quantity: 1,
+      strategy: "demand_peak_shave",
+      analysis_years: 1,
+      discount_rate: 0,
+      rate_escalator: 0,
+    });
+    const lossy = sweepBatteries({
+      load_kwh: load,
+      rate: demandRate(),
+      batteries: [battery({ round_trip_efficiency: 0.5 })],
+      max_quantity: 1,
+      strategy: "demand_peak_shave",
+      analysis_years: 1,
+      discount_rate: 0,
+      rate_escalator: 0,
+    });
+    expect(efficient[0].annual_savings_usd).toBeGreaterThan(lossy[0].annual_savings_usd);
   });
 });

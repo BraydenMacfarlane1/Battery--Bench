@@ -79,7 +79,7 @@ export function syntheticBatteries(): Battery[] {
   return [
     {
       id: "small",
-      name: "Small cabinet",
+      name: "Example Small cabinet",
       usable_capacity_kwh: 50,
       max_charge_rate_kw: 25,
       max_discharge_rate_kw: 25,
@@ -90,7 +90,7 @@ export function syntheticBatteries(): Battery[] {
     },
     {
       id: "medium",
-      name: "Medium cabinet",
+      name: "Example Medium cabinet",
       usable_capacity_kwh: 100,
       max_charge_rate_kw: 50,
       max_discharge_rate_kw: 50,
@@ -101,7 +101,7 @@ export function syntheticBatteries(): Battery[] {
     },
     {
       id: "large",
-      name: "Large cabinet",
+      name: "Example Large cabinet",
       usable_capacity_kwh: 200,
       max_charge_rate_kw: 100,
       max_discharge_rate_kw: 100,
