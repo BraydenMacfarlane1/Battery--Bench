@@ -182,7 +182,18 @@ describe("Sun Daddy proxy", () => {
     const listBody = (await list.json()) as { projects: { id: string; name: string }[]; warnings: string[] };
     expect(listBody.warnings).toEqual([]);
     expect(listBody.projects).toEqual([
-      { id: "93", name: "Solar + Battery - Carport" },
+      {
+        id: "93",
+        name: "Solar + Battery - Carport",
+        customer_id: "80",
+        customer_name: "Synthetic Customer",
+        label: "Synthetic carport",
+        project_type: "solar_battery",
+        status: "complete",
+        site_address: "100 Synthetic Way",
+        utility: "Synthetic Power",
+        updated_at: "2026-03-02 12:00:00",
+      },
       { id: "proj_b", name: "String id" },
     ]);
 

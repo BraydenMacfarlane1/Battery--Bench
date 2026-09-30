@@ -253,7 +253,7 @@ export default function Worksheet() {
         </div>
         <div>
           <p className="kicker">Rocky Mountain Power · Utah Schedule 6 · {TARIFF_AS_OF}</p>
-          <h1>Battery Bench</h1>
+          <h2>Schedule 6</h2>
           <p className="lede">
             Commercial peak-shave sizer. Power is the kilowatts you take off the billing peak. Energy is how long that
             peak actually lasts.
