@@ -76,6 +76,8 @@ export function BatteryStep() {
           <BatteryOverride
             ranked={model.ranked}
             swept={model.swept}
+            known={sizer.comparison}
+            peakKw={sizer.peakKw}
             mode={mode}
             ctx={sizer.rankContext}
             selected={selection.selected}
@@ -136,7 +138,8 @@ export function BatteryStep() {
         </div>
         <p className="meta">
           Defaults are planning assumptions: 90% round trip, 2% degradation, 6% discount, 2% escalator, 25 years. Max units
-          is a ceiling. Each battery is swept only across quantities that can matter for this site&apos;s peak.
+          is a ceiling on the comparison sweep. The quantity menu still lists every whole number up to the count that
+          covers about 1.5× this site&apos;s peak, at least 1 through 10, and never more than 100.
         </p>
       </details>
     </div>

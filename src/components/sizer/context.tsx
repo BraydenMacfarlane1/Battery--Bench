@@ -116,6 +116,7 @@ export type SizerContextValue = {
   outageSolar: boolean;
   setOutageSolar: (value: boolean) => void;
   model: RankSuccess | SweepFailure;
+  comparison: CandidateMetrics[];
   selection: { top: CandidateMetrics; selected: CandidateMetrics; pinned: boolean } | null;
   detail: SimulationResult | null;
   chartSeries: { name: string; points: { kwh: number; savings: number }[] }[];

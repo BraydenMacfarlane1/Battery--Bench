@@ -1,9 +1,12 @@
 import type { CandidateMetrics, RankContext, RankingMode } from "../../dispatch/rank";
+import { quantityChoicesForBattery } from "../../dispatch/rank";
 import { batteryMissesConstraint, constraintMissLabel, uniqueBatteries } from "./model";
 
 export function BatteryOverride({
   ranked,
   swept,
+  known,
+  peakKw,
   mode,
   ctx,
   selected,
@@ -15,6 +18,9 @@ export function BatteryOverride({
 }: {
   ranked: readonly CandidateMetrics[];
   swept: readonly CandidateMetrics[];
+  /** Sampled rows plus any quantity simulated for the current selection. */
+  known: readonly CandidateMetrics[];
+  peakKw: number;
   mode: RankingMode;
   ctx: RankContext;
   selected: CandidateMetrics;
@@ -28,10 +34,10 @@ export function BatteryOverride({
   const nameCount = new Map<string, number>();
   const inProject = new Set(projectIds);
   for (const battery of batteries) nameCount.set(battery.name, (nameCount.get(battery.name) ?? 0) + 1);
-  const quantities = swept
-    .filter((row) => row.battery.id === selected.battery.id)
-    .map((row) => row.quantity)
-    .sort((a, b) => a - b);
+  const quantities = quantityChoicesForBattery(selected.battery, peakKw, [
+    selected.quantity,
+    ...known.filter((row) => row.battery.id === selected.battery.id).map((row) => row.quantity),
+  ]);
   return (
     <div className="override" data-testid="battery-override">
       <label>
@@ -51,9 +57,13 @@ export function BatteryOverride({
       </label>
       <label>
         Quantity
-        <select value={String(selected.quantity)} onChange={(event) => onQuantity(Number(event.target.value))}>
+        <select
+          data-testid="quantity-select"
+          value={String(selected.quantity)}
+          onChange={(event) => onQuantity(Number(event.target.value))}
+        >
           {quantities.map((quantity) => {
-            const row = swept.find((entry) => entry.battery.id === selected.battery.id && entry.quantity === quantity);
+            const row = known.find((entry) => entry.battery.id === selected.battery.id && entry.quantity === quantity);
             const misses = row ? constraintMissLabel(row, mode, ctx) : null;
             return (
               <option key={quantity} value={quantity}>
