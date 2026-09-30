@@ -3,6 +3,9 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
+import { HOURS_PER_YEAR } from "../src/dispatch/calendar";
+import { normalizeProjectExport } from "../src/sun-daddy/normalize";
+import { flatLgsRate } from "./flat-lgs-fixture";
 
 afterEach(() => {
   cleanup();
@@ -188,6 +191,108 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("load-source-badge").textContent).toBe("Measured hourly data");
     await next(user);
     expect(screen.getByTestId("tariff-callout").textContent).toContain("Could not fully price this tariff.");
+  });
+
+  it("shows the rate utility on Site and rate and hides the callout for a flat tariff", async () => {
+    const user = userEvent.setup();
+    const hourly = new Array<number>(HOURS_PER_YEAR).fill(10);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) {
+          return new Response(JSON.stringify({ batteries: [], warnings: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.includes("/api/sun-daddy/projects")) {
+          return new Response(
+            JSON.stringify({
+              projects: [
+                {
+                  id: 15,
+                  name: "Synthetic warehouse",
+                  customer_name: "Synthetic Customer",
+                  utility: "Wrong Power",
+                },
+              ],
+              warnings: [],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/sun-daddy/project/15")) {
+          return new Response(
+            JSON.stringify({
+              normalized: normalizeProjectExport({
+                schema_version: 1,
+                project: { id: 15, name: "Synthetic warehouse" },
+                rates: { pre: { rate: flatLgsRate() } },
+                load: { hourly_kwh: hourly, profiles: [{ pre_rate: flatLgsRate() }] },
+              }),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await user.click(screen.getByRole("button", { name: /Synthetic warehouse/ }));
+    await next(user);
+    expect(screen.getByTestId("site-utility").textContent).toBe("NV Energy (NV)");
+    expect(screen.getByText("LGS-1")).toBeTruthy();
+    expect(screen.queryByTestId("tariff-callout")).toBeNull();
+    expect(screen.queryByText("Not listed")).toBeNull();
+  });
+
+  it("falls back to the project list utility when the rate does not name one", async () => {
+    const user = userEvent.setup();
+    const hourly = new Array<number>(HOURS_PER_YEAR).fill(10);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) {
+          return new Response(JSON.stringify({ batteries: [], warnings: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.includes("/api/sun-daddy/projects")) {
+          return new Response(
+            JSON.stringify({
+              projects: [{ id: 16, name: "Synthetic roof", customer_name: "Synthetic Customer", utility: "NVenergy" }],
+              warnings: [],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/sun-daddy/project/16")) {
+          const normalized = normalizeProjectExport({
+            schema_version: 1,
+            project: { id: 16, name: "Synthetic roof" },
+            rates: { pre: { rate: { name: "LGS-1", fixed_monthly_charge: 10 } } },
+            load: { hourly_kwh: hourly },
+          });
+          return new Response(JSON.stringify({ normalized }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await user.click(screen.getByRole("button", { name: /Synthetic roof/ }));
+    await next(user);
+    expect(screen.getByTestId("site-utility").textContent).toBe("NV Energy");
+    expect(screen.queryByTestId("tariff-callout")).toBeNull();
   });
 
   it("keeps a chosen battery while the ranking mode changes, then resets to the best", async () => {

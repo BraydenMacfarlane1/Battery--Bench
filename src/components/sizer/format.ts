@@ -33,6 +33,24 @@ export function projectCountLabel(count: number): string {
   return count === 1 ? "1 project" : `${formatCount(count)} projects`;
 }
 
+/** Compact spellings that show up in Sun Daddy exports. Anything else is shown as written. */
+const UTILITY_DISPLAY_NAMES: Record<string, string> = {
+  nvenergy: "NV Energy",
+  nve: "NV Energy",
+};
+
+/** "NVenergy" + "NV" becomes "NV Energy (NV)". Unknown names stay as written. */
+export function formatUtilityLabel(utility: string | null | undefined, state?: string | null): string | null {
+  const raw = utility?.trim();
+  if (!raw) return null;
+  const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const name = UTILITY_DISPLAY_NAMES[compact] ?? raw;
+  const region = state?.trim();
+  if (!region) return name;
+  const shown = region.length === 2 ? region.toUpperCase() : region;
+  return `${name} (${shown})`;
+}
+
 export function friendlyToken(value: string | undefined): string | null {
   if (!value) return null;
   const cleaned = value.replace(/[_-]+/g, " ").trim();

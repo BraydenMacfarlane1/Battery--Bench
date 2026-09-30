@@ -27,6 +27,10 @@ export type NormalizedSolarSeries = {
 export type NormalizedRate = {
   rate: RateModel | null;
   warnings: string[];
+  /** Raw utility name from the rate record, before display tidy-up. */
+  utility: string | null;
+  /** State code from the rate record, such as "NV". */
+  state: string | null;
 };
 
 /** How `load.hourly_source` described a complete hourly series. */

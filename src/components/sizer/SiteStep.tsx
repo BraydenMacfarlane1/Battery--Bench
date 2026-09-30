@@ -17,7 +17,7 @@ export function SiteStep() {
         </div>
         <div>
           <dt>Utility</dt>
-          <dd>{sizer.meta.utility ?? "Not listed"}</dd>
+          <dd data-testid="site-utility">{sizer.meta.utility ?? "Not listed"}</dd>
         </div>
         <div>
           <dt>Rate</dt>
