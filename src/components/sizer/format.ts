@@ -84,3 +84,19 @@ export function peakOf(values: readonly number[]): number {
   for (const value of values) if (value > peak) peak = value;
   return peak;
 }
+
+export function missingHourlyLoadMessage(gap: "monthly" | "incomplete" | null): string | null {
+  if (gap === "monthly") {
+    return "This project only has monthly bill data in Sun Daddy, not hourly usage, so it can't be simulated yet.";
+  }
+  if (gap === "incomplete") {
+    return "This project doesn't have a complete 8,760-hour load in Sun Daddy, so it can't be simulated yet.";
+  }
+  return null;
+}
+
+export function loadSourceBadge(source: "measured" | "estimated" | null | undefined): string | null {
+  if (source === "measured") return "Measured hourly data";
+  if (source === "estimated") return "Estimated from bills";
+  return null;
+}

@@ -215,6 +215,26 @@ describe("project export", () => {
     expect(study.warnings.join(" ")).toContain("rates.pre was missing");
   });
 
+  it("keeps load.hourly_source when the hourly series is complete", () => {
+    const hourly = new Array<number>(HOURS_PER_YEAR).fill(1);
+    const measured = normalizeProjectExport({
+      load: { hourly_kwh: hourly, hourly_source: "measured" },
+    });
+    expect(measured.load_kwh).toHaveLength(HOURS_PER_YEAR);
+    expect(measured.load_hourly_source).toBe("measured");
+
+    const estimated = normalizeProjectExport({
+      load: { hourly_kwh: hourly, hourly_source: "estimated_from_bills" },
+    });
+    expect(estimated.load_hourly_source).toBe("estimated");
+
+    const monthlyOnly = normalizeProjectExport({
+      load: { monthly_kwh: new Array<number>(12).fill(10), hourly_source: "estimated" },
+    });
+    expect(monthlyOnly.load_kwh).toBeNull();
+    expect(monthlyOnly.load_hourly_source).toBeNull();
+  });
+
   it("does not invent an hourly load from monthly kWh", () => {
     const study = normalizeProjectExport({
       schema_version: 1,
