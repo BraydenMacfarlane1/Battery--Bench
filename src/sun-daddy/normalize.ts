@@ -142,12 +142,13 @@ export function normalizeProjectList(body: unknown): { projects: ProjectListItem
 
 export function normalizeRatePair(rateBody: unknown, nemBody: unknown, label: string): NormalizedRate {
   const warnings: WarningBag = [];
+  const identity = rateIdentity(rateBody);
   if (!asRecord(rateBody) && !asRecord(nemBody)) {
-    return { rate: null, warnings: [`${label} was missing.`] };
+    return { rate: null, warnings: [`${label} was missing.`], ...identity };
   }
   const built = rateBody ? buildRateModel(rateBody, warnings) : null;
   const model = applyExportCredit(built ?? emptyRate(label), rateBody, nemBody, warnings);
-  return { rate: model, warnings: dedupe(warnings) };
+  return { rate: model, warnings: dedupe(warnings), ...identity };
 }
 
 function buildRateModel(body: unknown, warnings: WarningBag): RateModel | null {
@@ -186,6 +187,8 @@ function fromComponents(args: {
   let sawFixed = false;
   let incomplete = false;
 
+  let minimumFixed = 0;
+
   args.components.forEach((entry, index) => {
     const component = asRecord(entry);
     if (!component) {
@@ -193,8 +196,9 @@ function fromComponents(args: {
       args.warnings.push(`Component ${index + 1} was not an object and was skipped.`);
       return;
     }
-    const kind = readString(component.kind);
-    const componentName = readString(component.name) ?? `${kind ?? "component"} ${index + 1}`;
+    const kindRaw = readString(component.kind);
+    const kind = kindRaw?.toLowerCase() ?? null;
+    const componentName = readString(component.name) ?? readString(component.label) ?? `${kind ?? "component"} ${index + 1}`;
     if (kind === "percent") {
       incomplete = true;
       args.warnings.push(`${componentName} is a percent component and was not priced.`);
@@ -202,13 +206,31 @@ function fromComponents(args: {
     }
     if (kind !== "energy" && kind !== "import_kwh" && kind !== "demand" && kind !== "fixed") {
       incomplete = true;
-      args.warnings.push(`${componentName} has unsupported kind ${kind ?? "(missing)"} and was skipped.`);
+      args.warnings.push(`${componentName} has unsupported kind ${kindRaw ?? "(missing)"} and was skipped.`);
+      return;
+    }
+    const valueTypeRaw = readString(component.value_type);
+    const valueType = valueTypeRaw?.toLowerCase() ?? null;
+    if (valueType && !KNOWN_VALUE_TYPES.has(valueType)) {
+      incomplete = true;
+      args.warnings.push(`${componentName} has unsupported value_type ${valueTypeRaw} and was skipped.`);
+      return;
+    }
+    if (valueType === "tiered" || nonEmptyPeriods(component.tiers) || nonEmptyPeriods(component.tiered_periods)) {
+      incomplete = true;
+      args.warnings.push(`${componentName} is tiered and was not priced.`);
       return;
     }
     const amount = readRateAmount(component);
     if (amount == null) {
       incomplete = true;
       args.warnings.push(`${componentName} had no numeric rate and was skipped.`);
+      return;
+    }
+    const target = readString(component.target)?.toLowerCase() ?? null;
+    if (!targetAllowed(kind, target)) {
+      incomplete = true;
+      args.warnings.push(`${componentName} has target ${target ?? "(missing)"} and was skipped.`);
       return;
     }
     const scope = readScope(component, args.seasons, componentName, args.warnings);
@@ -224,11 +246,14 @@ function fromComponents(args: {
       }
       fixed += amount;
       sawFixed = true;
+      // A minimum fixed charge is still billed every month. It also floors the bill
+      // so export credits cannot reduce the month below that customer charge.
+      if (component.is_minimum === true) minimumFixed += amount;
       return;
     }
-    if (!scope.masks) {
+    const masks = masksForValueType(valueType, scope, componentName, args.warnings);
+    if (!masks) {
       incomplete = true;
-      args.warnings.push(`${componentName} had no 24-hour weekday/weekend mask and was skipped.`);
       return;
     }
     if (kind === "demand") {
@@ -236,20 +261,22 @@ function fromComponents(args: {
         name: componentName,
         season_ids: scope.seasonIds,
         months: scope.months,
-        weekday_hours: scope.masks.weekday,
-        weekend_hours: scope.masks.weekend,
+        weekday_hours: masks.weekday,
+        weekend_hours: masks.weekend,
         demand_rate_kw: amount,
         is_facilities: component.is_facilities === true,
       });
       return;
     }
+    const pricedAsExport = kind === "energy" && target === "export";
     energy.push({
       name: componentName,
       season_ids: scope.seasonIds,
       months: scope.months,
-      weekday_hours: scope.masks.weekday,
-      weekend_hours: scope.masks.weekend,
-      energy_rate_kwh: amount,
+      weekday_hours: masks.weekday,
+      weekend_hours: masks.weekend,
+      energy_rate_kwh: pricedAsExport ? 0 : amount,
+      ...(pricedAsExport ? { export_rate_kwh: amount } : {}),
     });
   });
 
@@ -260,9 +287,10 @@ function fromComponents(args: {
   }
   if (!sawFixed && columnFixed != null) fixed = columnFixed;
 
-  noteScheduleLimits(args.rate, args.columns, args.modelJson, args.warnings, () => {
+  const flags = billFlags(args.rate, args.columns, args.modelJson, args.warnings, () => {
     incomplete = true;
   });
+  const minBill = minimumFixed > 0 ? Math.max(flags.min_bill_usd ?? 0, minimumFixed) : flags.min_bill_usd;
   if (nonEmptyPeriods(args.rate.tou_periods) || nonEmptyPeriods(args.columns.tou_periods)) {
     incomplete = true;
     args.warnings.push("TOU period rows were ignored because model_json components are present.");
@@ -277,7 +305,8 @@ function fromComponents(args: {
     demand_components: demand,
     fixed_monthly_charge: fixed,
     export_credit_kwh: 0,
-    ...optionalBillFlags(args.modelJson),
+    ...(minBill != null ? { min_bill_usd: minBill } : {}),
+    ...(flags.tax_rate != null ? { tax_rate: flags.tax_rate } : {}),
   };
 }
 
@@ -361,7 +390,7 @@ function fromScheduleTables(args: {
     });
   }
 
-  noteScheduleLimits(args.rate, args.columns, args.modelJson, args.warnings, () => {
+  const flags = billFlags(args.rate, args.columns, args.modelJson, args.warnings, () => {
     incomplete = true;
   });
   if (incomplete) args.warnings.unshift(TARIFF_INCOMPLETE);
@@ -374,7 +403,7 @@ function fromScheduleTables(args: {
     demand_components: demand,
     fixed_monthly_charge: readFinite(args.columns.fixed_monthly_charge) ?? 0,
     export_credit_kwh: 0,
-    ...optionalBillFlags(args.modelJson),
+    ...flags,
   };
 }
 
@@ -437,6 +466,14 @@ function applyExportCredit(
   return model;
 }
 
+const KNOWN_VALUE_TYPES = new Set(["flat", "tou", "tiered", "seasonal"]);
+/** Interval data in this model is already one hour, so these match hourly netting. */
+const HOURLY_NETTING = new Set(["hourly", "interval", "intervals"]);
+/** Credits applied in the month they occur, with no carry into the next month. */
+const FORFEIT_ROLLOVER = new Set(["rollover_forfeit", "forfeit", "none", "no_rollover", "monthly"]);
+/** Export credits offset energy, demand, and the fixed charge, which is what the bill does. */
+const FULL_BILL_SCOPE = new Set(["full_bill", "full", "bill"]);
+
 function noteScheduleLimits(
   rate: Record<string, unknown>,
   columns: Record<string, unknown>,
@@ -449,23 +486,32 @@ function noteScheduleLimits(
     mark();
     warnings.push("A demand threshold is set and was not applied. Demand is priced on the full window peak.");
   }
-  if (readFinite(columns.tax_rate) != null || (modelJson && readFinite(modelJson.tax_rate) != null)) {
-    mark();
-    warnings.push("A tax rate was present and was not applied, because it is not clear if it is a percent or a fraction.");
-  }
   const trueUp =
-    columns.true_up_month != null ||
-    columns.true_up_day != null ||
+    presentValue(columns.true_up_month) ||
+    presentValue(columns.true_up_day) ||
+    columns.true_up != null ||
     rate.true_up != null ||
-    (modelJson ? modelJson.true_up != null : false);
+    (modelJson
+      ? modelJson.true_up != null || presentValue(modelJson.true_up_month) || presentValue(modelJson.true_up_day)
+      : false);
   if (trueUp) {
     mark();
     warnings.push("Annual true-up is not modeled. Export credits are applied in the month they occur.");
   }
-  const netting = modelJson ? readString(modelJson.netting) : null;
-  if (netting && netting.toLowerCase() !== "hourly") {
+  const netting = modelJson ? readString(modelJson.netting)?.toLowerCase() : null;
+  if (netting && !HOURLY_NETTING.has(netting)) {
     mark();
     warnings.push(`This tariff's netting is ${netting}. The bill is still netted each hour.`);
+  }
+  const rollover = modelJson ? readString(modelJson.credit_rollover)?.toLowerCase() : null;
+  if (rollover && !FORFEIT_ROLLOVER.has(rollover)) {
+    mark();
+    warnings.push(`Credit rollover ${rollover} is not modeled. Export credits stay in the month they occur.`);
+  }
+  const creditScope = modelJson ? readString(modelJson.export_credit_scope)?.toLowerCase() : null;
+  if (creditScope && !FULL_BILL_SCOPE.has(creditScope)) {
+    mark();
+    warnings.push(`Export credits are applied to the full bill. This tariff's export credit scope is ${creditScope}.`);
   }
   const minBill = modelJson ? readFinite(modelJson.min_bill) : null;
   if (minBill != null && minBill < 0) {
@@ -474,10 +520,58 @@ function noteScheduleLimits(
   }
 }
 
-function optionalBillFlags(modelJson: Record<string, unknown> | null): Pick<RateModel, "min_bill_usd"> {
+function billFlags(
+  rate: Record<string, unknown>,
+  columns: Record<string, unknown>,
+  modelJson: Record<string, unknown> | null,
+  warnings: WarningBag,
+  mark: () => void,
+): Pick<RateModel, "min_bill_usd" | "tax_rate"> {
+  noteScheduleLimits(rate, columns, modelJson, warnings, mark);
   const minBill = modelJson ? readFinite(modelJson.min_bill) : null;
-  if (minBill == null || minBill < 0) return {};
-  return { min_bill_usd: minBill };
+  const tax = resolveTaxRate(columns, modelJson, warnings, mark);
+  return {
+    ...(minBill != null && minBill >= 0 ? { min_bill_usd: minBill } : {}),
+    ...(tax != null ? { tax_rate: tax } : {}),
+  };
+}
+
+/**
+ * Sun Daddy stores tax_rate as either a fraction or a percent.
+ * 0 is unused. (0, 1) is a fraction. (1, 100] is a percent. 1 is ambiguous.
+ */
+function resolveTaxRate(
+  columns: Record<string, unknown>,
+  modelJson: Record<string, unknown> | null,
+  warnings: WarningBag,
+  mark: () => void,
+): number | undefined {
+  const modelRaw = modelJson ? modelJson.tax_rate : undefined;
+  const columnRaw = columns.tax_rate;
+  const modelNum = readFinite(modelRaw);
+  const columnNum = readFinite(columnRaw);
+  if ((modelRaw != null && modelNum == null) || (columnRaw != null && columnNum == null && modelNum == null)) {
+    mark();
+    warnings.push("A tax rate was present and was not applied, because it was not a number.");
+  }
+  if (modelNum != null && columnNum != null && modelNum !== 0 && columnNum !== 0 && Math.abs(modelNum - columnNum) > 1e-9) {
+    mark();
+    warnings.push("The schedule tax rate differs from model_json. The model_json tax was used.");
+  }
+  const chosen = modelNum != null && modelNum !== 0 ? modelNum : columnNum != null && columnNum !== 0 ? columnNum : null;
+  if (chosen == null) return undefined;
+  if (chosen < 0 || chosen > 100) {
+    mark();
+    warnings.push("A tax rate was present and was not applied, because it is outside 0–100%.");
+    return undefined;
+  }
+  if (chosen === 1) {
+    mark();
+    warnings.push("A tax rate was present and was not applied, because it is not clear if it is a percent or a fraction.");
+    return undefined;
+  }
+  if (chosen > 0 && chosen < 1) return chosen;
+  return chosen / 100;
 }
 
 function periodToCharges(
@@ -585,6 +679,29 @@ function readScope(
   return { seasonal, seasonIds: seasonIds ?? undefined, months: months ?? undefined, masks };
 }
 
+function targetAllowed(kind: string, target: string | null): boolean {
+  if (target == null || target === "import") return true;
+  return kind === "energy" && target === "export";
+}
+
+/** Flat rates apply every hour. A mask is required only when the component is not flat. */
+function masksForValueType(
+  valueType: string | null,
+  scope: { seasonal: boolean; masks: { weekday: HourMask; weekend: HourMask } | null },
+  name: string,
+  warnings: WarningBag,
+): { weekday: HourMask; weekend: HourMask } | null {
+  if (scope.masks) return scope.masks;
+  if (valueType === "flat") return { weekday: ALL_HOURS, weekend: ALL_HOURS };
+  if (valueType === "seasonal") {
+    if (scope.seasonal) return { weekday: ALL_HOURS, weekend: ALL_HOURS };
+    warnings.push(`${name} is seasonal but has no season or month and was skipped.`);
+    return null;
+  }
+  warnings.push(`${name} had no 24-hour weekday/weekend mask and was skipped.`);
+  return null;
+}
+
 function masksFromRow(row: Record<string, unknown>, flat: boolean): { weekday: HourMask; weekend: HourMask } | null {
   const weekday = asMask(row.weekday_hours);
   const weekend = asMask(row.weekend_hours);
@@ -608,19 +725,51 @@ function readExportCredit(record: Record<string, unknown>): { value: number; amb
 }
 
 function resolvePreRate(root: Record<string, unknown>, warnings: WarningBag): { rate: unknown; nem: unknown } {
-  const rates = asRecord(root.rates);
-  const pre = asRecord(rates?.pre);
-  if (pre && (pre.rate != null || pre.nem_rate != null)) {
-    return { rate: pre.rate, nem: pre.nem_rate };
-  }
   const load = asRecord(root.load);
   const profiles = Array.isArray(load?.profiles) ? load.profiles : [];
   const first = asRecord(profiles[0]);
+  const profileRate = first ? asRecord(first.pre_rate) : null;
+  const rates = asRecord(root.rates);
+  const pre = asRecord(rates?.pre);
+  if (pre && (pre.rate != null || pre.nem_rate != null)) {
+    return { rate: mergeRateIdentity(pre.rate, profileRate), nem: pre.nem_rate };
+  }
   if (first && (first.pre_rate != null || first.nem_rate != null)) {
     warnings.push("rates.pre was missing. The first load profile's rate was used.");
     return { rate: first.pre_rate, nem: first.nem_rate };
   }
   return { rate: null, nem: null };
+}
+
+function rateIdentity(rateBody: unknown): { utility: string | null; state: string | null } {
+  const rate = asRecord(rateBody);
+  if (!rate) return { utility: null, state: null };
+  const columns = asRecord(rate.rate_schedules) ?? rate;
+  return {
+    utility:
+      readString(columns.utility) ??
+      readString(rate.utility) ??
+      readString(columns.utility_name) ??
+      readString(rate.utility_name),
+    state: readString(columns.state) ?? readString(rate.state),
+  };
+}
+
+/** Copy utility, state, and name from the load profile when the priced rate omits them. */
+function mergeRateIdentity(rateBody: unknown, fallback: Record<string, unknown> | null): unknown {
+  const rate = asRecord(rateBody);
+  if (!rate || !fallback) return rateBody;
+  const columns = asRecord(rate.rate_schedules);
+  const hasUtility = readString(rate.utility) ?? (columns ? readString(columns.utility) : null);
+  const hasState = readString(rate.state) ?? (columns ? readString(columns.state) : null);
+  const hasName = readString(rate.name) ?? (columns ? readString(columns.name) : null);
+  if (hasUtility && hasState && hasName) return rateBody;
+  return {
+    ...rate,
+    ...(hasUtility ? {} : fallback.utility != null ? { utility: fallback.utility } : {}),
+    ...(hasState ? {} : fallback.state != null ? { state: fallback.state } : {}),
+    ...(hasName ? {} : fallback.name != null ? { name: fallback.name } : {}),
+  };
 }
 
 function readPostRates(value: unknown): NormalizedRate[] {
@@ -629,7 +778,7 @@ function readPostRates(value: unknown): NormalizedRate[] {
   if (!Array.isArray(post)) return [];
   return post.map((entry, index) => {
     const record = asRecord(entry);
-    if (!record) return { rate: null, warnings: [`Post rate ${index + 1} was not an object.`] };
+    if (!record) return { rate: null, warnings: [`Post rate ${index + 1} was not an object.`], utility: null, state: null };
     return normalizeRatePair(record.rate, record.nem_rate, `Post rate ${index + 1}`);
   });
 }
@@ -850,6 +999,10 @@ function readRateAmount(component: Record<string, unknown>): number | null {
   );
 }
 
+function presentValue(value: unknown): boolean {
+  return value != null && value !== "";
+}
+
 function readMonthList(value: unknown): number[] | null {
   if (!Array.isArray(value) || value.length === 0) return null;
   const months: number[] = [];
@@ -996,7 +1149,7 @@ function emptyStudy(warnings: string[]): NormalizedStudy {
     billed_peak_kw: new Array<number | null>(12).fill(null),
     solar_kwh: null,
     solar_series: [],
-    pre_rate: { rate: null, warnings: [] },
+    pre_rate: { rate: null, warnings: [], utility: null, state: null },
     post_rates: [],
     batteries: [],
     selected_batteries: [],

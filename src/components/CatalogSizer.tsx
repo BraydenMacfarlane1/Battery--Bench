@@ -29,7 +29,7 @@ import {
   type CatalogStatus,
   type ProjectPick,
 } from "./sizer/model";
-import { peakOf, sum } from "./sizer/format";
+import { formatUtilityLabel, peakOf, sum } from "./sizer/format";
 import { canAdvanceWizard, isWizardStep, type WizardStepId } from "./sizer/wizard";
 
 const example = syntheticExample();
@@ -374,10 +374,11 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     const peaks = study.billed_peak_kw.filter((peak) => peak != null);
     if (peaks.length === 12) setBilledText(study.billed_peak_kw.join(", "));
     setSource("sun");
+    const rateUtility = study.pre_rate.utility?.trim() || null;
     setMeta({
       customerName: project.customer_name?.trim() || "No customer",
       projectName: study.project_name ?? project.name,
-      utility: project.utility ?? null,
+      utility: formatUtilityLabel(rateUtility || project.utility, study.pre_rate.state),
     });
     setTariffWarnings(tariff);
     setStudyWarnings(notes);

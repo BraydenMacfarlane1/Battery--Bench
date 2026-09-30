@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { HOURS_PER_YEAR, hoursBetween } from "../src/dispatch/calendar";
-import { assertRateModel } from "../src/dispatch/bill";
+import { assertRateModel, hourlyPrices } from "../src/dispatch/bill";
+import { HOURS_PER_YEAR, buildCalendar, hoursBetween, monthSpans } from "../src/dispatch/calendar";
+import { simulateDispatch } from "../src/dispatch/simulate";
+import type { Battery } from "../src/dispatch/types";
+import { formatUtilityLabel } from "../src/components/sizer/format";
 import {
   normalizeBatteryCatalog,
   normalizeProjectExport,
@@ -8,6 +11,7 @@ import {
   normalizeRatePair,
 } from "../src/sun-daddy/normalize";
 import { TARIFF_INCOMPLETE } from "../src/sun-daddy/types";
+import { flatLgsRate } from "./flat-lgs-fixture";
 
 const onPeak = hoursBetween(16, 21);
 const offPeak = onPeak.map((hour) => !hour);
@@ -484,5 +488,234 @@ describe("numeric export ids", () => {
     );
     expect(numeric.rate?.id).toBe("15");
     expect(text.rate?.id).toBe("rate_string");
+  });
+});
+
+const FLAT_DEMAND_PER_KW = 4.6 + 5.48;
+const FLAT_ENERGY_PER_KWH = 0.06746 + 0.00722 + 0.0002 + -0.00052 + 0.00165;
+
+function peakyLoad(): number[] {
+  const load = new Array<number>(HOURS_PER_YEAR).fill(30);
+  for (const span of monthSpans()) {
+    load[span.start + 18] = 100;
+    load[span.start + 19] = 100;
+  }
+  return load;
+}
+
+describe("flat tariff components", () => {
+  it("prices a year-round flat rate and does not warn about missing masks or a zero tax", () => {
+    const normalized = normalizeRatePair(flatLgsRate(), null, "Pre");
+    const rate = normalized.rate;
+    if (!rate) throw new Error("expected a rate");
+    assertRateModel(rate);
+    expect(normalized.warnings).toEqual([]);
+    expect(normalized.utility).toBe("NVenergy");
+    expect(normalized.state).toBe("NV");
+    expect(rate.name).toBe("LGS-1");
+    expect(rate.fixed_monthly_charge).toBeCloseTo(15.8);
+    expect(rate.min_bill_usd).toBeCloseTo(15.8);
+    expect(rate.tax_rate).toBeUndefined();
+    expect(rate.demand_components.map((component) => component.demand_rate_kw)).toEqual([4.6, 5.48]);
+    expect(rate.demand_components.every((component) => component.weekday_hours.every(Boolean))).toBe(true);
+    expect(rate.demand_components.every((component) => component.weekend_hours.every(Boolean))).toBe(true);
+    expect(rate.energy_periods.map((period) => period.name)).toEqual(["Usage", "DEAA", "TRED", "REPR", "EE"]);
+    expect(rate.energy_periods.reduce((sum, period) => sum + period.energy_rate_kwh, 0)).toBeCloseTo(FLAT_ENERGY_PER_KWH);
+    const prices = hourlyPrices(rate, buildCalendar(1));
+    expect(prices.unpricedHours).toBe(0);
+    expect(prices.importRate[0]).toBeCloseTo(FLAT_ENERGY_PER_KWH);
+    expect(prices.importRate[100]).toBeCloseTo(FLAT_ENERGY_PER_KWH);
+  });
+
+  it("reduces the flat demand charge by the stacked $/kW when a battery shaves the peak", () => {
+    const normalized = normalizeRatePair(flatLgsRate(), null, "Pre");
+    const rate = normalized.rate;
+    if (!rate) throw new Error("expected a rate");
+    const battery: Battery = {
+      id: "synthetic-pack",
+      name: "Synthetic pack",
+      usable_capacity_kwh: 200,
+      max_charge_rate_kw: 80,
+      max_discharge_rate_kw: 80,
+      cost_per_unit: 1000,
+      round_trip_efficiency: 1,
+      degradation_per_year: 0,
+    };
+    const result = simulateDispatch({
+      load_kwh: peakyLoad(),
+      rate,
+      battery,
+      quantity: 1,
+      strategy: "demand_peak_shave",
+      include_hourly: false,
+    });
+    expect(result.with_battery.total_usd).toBeLessThan(result.baseline.total_usd);
+    let shaved = false;
+    for (let month = 0; month < 12; month += 1) {
+      const reduced = result.monthly_peak_kw.baseline[month] - result.monthly_peak_kw.with_battery[month];
+      const demandReduced = result.baseline.months[month].demand_usd - result.with_battery.months[month].demand_usd;
+      expect(demandReduced).toBeCloseTo(reduced * FLAT_DEMAND_PER_KW);
+      if (reduced > 1) shaved = true;
+    }
+    expect(shaved).toBe(true);
+  });
+
+  it("keeps utility and state from the load profile when the priced rate omits them", () => {
+    const study = normalizeProjectExport({
+      schema_version: 1,
+      project: { id: "synthetic-lgs", name: "Synthetic warehouse" },
+      rates: { pre: { rate: flatLgsRate({ utility: null, state: null, name: null }) } },
+      load: {
+        hourly_kwh: new Array<number>(HOURS_PER_YEAR).fill(1),
+        profiles: [{ pre_rate: flatLgsRate() }],
+      },
+    });
+    expect(study.pre_rate.warnings).toEqual([]);
+    expect(study.pre_rate.utility).toBe("NVenergy");
+    expect(study.pre_rate.state).toBe("NV");
+    expect(study.pre_rate.rate?.name).toBe("LGS-1");
+    expect(study.warnings.join(" ")).not.toContain("mask");
+  });
+
+  it("still skips a non-flat component that has no hour mask, and names other dropped pieces", () => {
+    const masked = normalizeRatePair(
+      {
+        name: "Partial synthetic",
+        model_json: {
+          components: [
+            { kind: "energy", label: "Usage", value_type: "flat", target: "import", rate: 0.1 },
+            { kind: "demand", label: "On-peak", value_type: "tou", rate: 9 },
+            { kind: "demand", name: "Mystery", rate: 3 },
+            { kind: "energy", label: "Block", value_type: "tiered", rate: 0.4, tiers: [{ up_to: 100, rate: 0.4 }] },
+            { kind: "energy", label: "Odd", value_type: "ratchet", rate: 1 },
+            { kind: "percent", label: "City tax", rate: 2 },
+            { kind: "energy", label: "Net", value_type: "flat", target: "net", rate: 0.2 },
+          ],
+        },
+      },
+      null,
+      "Partial",
+    );
+    expect(masked.warnings[0]).toBe(TARIFF_INCOMPLETE);
+    expect(masked.rate?.energy_periods.map((period) => period.name)).toEqual(["Usage"]);
+    expect(masked.rate?.demand_components).toEqual([]);
+    const text = masked.warnings.join(" ");
+    expect(text).toContain("On-peak had no 24-hour weekday/weekend mask and was skipped.");
+    expect(text).toContain("Mystery had no 24-hour weekday/weekend mask and was skipped.");
+    expect(text).toContain("Block is tiered and was not priced.");
+    expect(text).toContain("Odd has unsupported value_type ratchet and was skipped.");
+    expect(text).toContain("City tax is a percent component and was not priced.");
+    expect(text).toContain("Net has target net and was skipped.");
+  });
+
+  it("prices a seasonal value on every hour of its season and skips a seasonal component with no season", () => {
+    const normalized = normalizeRatePair(
+      {
+        name: "Seasonal synthetic",
+        model_json: {
+          seasons: [{ id: "summer", start_month: 6, end_month: 9 }],
+          components: [
+            { kind: "energy", label: "Summer", value_type: "seasonal", rate: 0.2, season_ids: ["summer"] },
+            { kind: "demand", label: "Summer demand", value_type: "seasonal", rate: 6, season_ids: ["summer"] },
+            { kind: "energy", label: "Nowhere", value_type: "seasonal", rate: 0.3 },
+            { kind: "import_kwh", label: "Import adder", value_type: "flat", rate: 0.01 },
+            { kind: "energy", label: "Sell", value_type: "flat", target: "export", rate: 0.03 },
+          ],
+        },
+      },
+      null,
+      "Seasonal",
+    );
+    expect(normalized.warnings[0]).toBe(TARIFF_INCOMPLETE);
+    expect(normalized.warnings.join(" ")).toContain("Nowhere is seasonal but has no season or month and was skipped.");
+    const summer = normalized.rate?.energy_periods.find((period) => period.name === "Summer");
+    const adder = normalized.rate?.energy_periods.find((period) => period.name === "Import adder");
+    const sell = normalized.rate?.energy_periods.find((period) => period.name === "Sell");
+    expect(summer).toMatchObject({ energy_rate_kwh: 0.2, season_ids: ["summer"] });
+    expect(summer?.weekday_hours.every(Boolean)).toBe(true);
+    expect(normalized.rate?.demand_components[0]).toMatchObject({
+      name: "Summer demand",
+      demand_rate_kw: 6,
+      season_ids: ["summer"],
+    });
+    expect(adder?.energy_rate_kwh).toBeCloseTo(0.01);
+    expect(sell).toMatchObject({ energy_rate_kwh: 0, export_rate_kwh: 0.03 });
+  });
+
+  it("applies a fraction tax, a percent tax, and ignores zero without a warning", () => {
+    const priced = (tax: number) =>
+      normalizeRatePair(
+        {
+          name: "Tax synthetic",
+          model_json: {
+            tax_rate: tax,
+            components: [{ kind: "energy", label: "Usage", value_type: "flat", rate: 0.1 }],
+          },
+        },
+        null,
+        "Tax",
+      );
+
+    expect(priced(0).warnings).toEqual([]);
+    expect(priced(0).rate?.tax_rate).toBeUndefined();
+    expect(priced(0.0825).warnings).toEqual([]);
+    expect(priced(0.0825).rate?.tax_rate).toBeCloseTo(0.0825);
+    expect(priced(8.25).warnings).toEqual([]);
+    expect(priced(8.25).rate?.tax_rate).toBeCloseTo(0.0825);
+
+    const ambiguous = priced(1);
+    expect(ambiguous.warnings[0]).toBe(TARIFF_INCOMPLETE);
+    expect(ambiguous.warnings.join(" ")).toContain("not clear if it is a percent or a fraction");
+    expect(ambiguous.rate?.tax_rate).toBeUndefined();
+
+    const columnPercent = normalizeRatePair(
+      {
+        name: "Column tax",
+        tax_rate: 8.25,
+        flat_periods: [
+          {
+            period_name: "All",
+            energy_rate_kwh: 0.1,
+          },
+        ],
+      },
+      null,
+      "Column",
+    );
+    expect(columnPercent.warnings).toEqual([]);
+    expect(columnPercent.rate?.tax_rate).toBeCloseTo(0.0825);
+
+    const monthly = normalizeRatePair(
+      {
+        name: "Monthly netting",
+        model_json: {
+          netting: "monthly",
+          credit_rollover: "indefinite",
+          export_credit_scope: "energy_only",
+          true_up_month: 12,
+          components: [{ kind: "fixed", label: "Customer", rate: 4 }],
+        },
+      },
+      null,
+      "Monthly",
+    );
+    expect(monthly.warnings[0]).toBe(TARIFF_INCOMPLETE);
+    const notes = monthly.warnings.join(" ");
+    expect(notes).toContain("netting is monthly");
+    expect(notes).toContain("indefinite");
+    expect(notes).toContain("energy_only");
+    expect(notes).toContain("true-up");
+    expect(monthly.rate?.fixed_monthly_charge).toBe(4);
+  });
+});
+
+describe("utility display names", () => {
+  it("tidies obvious compact utility names and leaves unknown names as written", () => {
+    expect(formatUtilityLabel("NVenergy", "NV")).toBe("NV Energy (NV)");
+    expect(formatUtilityLabel("NV Energy", "nv")).toBe("NV Energy (NV)");
+    expect(formatUtilityLabel("NVenergy", null)).toBe("NV Energy");
+    expect(formatUtilityLabel("City Power", "UT")).toBe("City Power (UT)");
+    expect(formatUtilityLabel("SCE", "CA")).toBe("SCE (CA)");
+    expect(formatUtilityLabel(null, "NV")).toBeNull();
   });
 });
