@@ -429,6 +429,10 @@ describe("numeric export ids", () => {
     expect(study.economics.analysis_period).toBe(25);
     expect(study.economics.system_size_kw).toBe(120.5);
     expect(study.batteries.map((battery) => battery.id)).toEqual(["7", "rack-a"]);
+    expect(study.selected_batteries).toEqual([
+      { battery_id: "7", quantity: 2 },
+      { battery_id: "rack-a", quantity: 1 },
+    ]);
     expect(study.batteries[0].round_trip_efficiency).toBe(0.9);
     expect(study.batteries[0].cost_per_additional_unit).toBe(36000);
     const pre = study.pre_rate.rate;

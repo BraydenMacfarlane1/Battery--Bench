@@ -82,6 +82,18 @@ export function WizardChrome() {
         </ol>
       </nav>
 
+      <div className="catalog-line">
+        <p data-testid="catalog-source">{sizer.catalogSource}</p>
+        <button type="button" className="btn btn-ghost" onClick={sizer.reloadCatalog} disabled={sizer.catalogBusy}>
+          {sizer.catalogBusy ? "Loading…" : "Reload catalog"}
+        </button>
+      </div>
+      {sizer.catalogPlaceholder ? (
+        <p className="warn-line" role="status" data-testid="catalog-placeholder">
+          {sizer.catalogPlaceholder}
+        </p>
+      ) : null}
+
       <section className="panel wizard-panel" aria-labelledby="wizard-title" data-testid="wizard-step" data-step={sizer.step}>
         <header className="step-head">
           <h2 id="wizard-title" ref={headingRef} tabIndex={-1}>

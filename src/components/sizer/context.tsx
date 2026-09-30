@@ -80,6 +80,11 @@ export type SizerContextValue = {
   backupHours: string;
   setBackupHours: (value: string) => void;
   catalogNotice: string;
+  catalogSource: string;
+  catalogPlaceholder: string | null;
+  catalogBusy: boolean;
+  reloadCatalog: () => void;
+  projectIds: readonly string[];
   strategy: DispatchStrategy;
   setStrategy: (value: DispatchStrategy) => void;
   rte: string;

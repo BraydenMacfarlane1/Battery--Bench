@@ -18,7 +18,13 @@ import {
 } from "../../dispatch/rank";
 import { parseBilledPeaks } from "../../dispatch/series-input";
 import type { Battery, DispatchStrategy, RateModel } from "../../dispatch/types";
+import type { SelectedBattery } from "../../sun-daddy/types";
 import { signedMoney, signedYears } from "./format";
+
+/** Ceiling on the peak-scaled quantity sweep. */
+export const MAX_UNITS = 48;
+
+export const PLACEHOLDER_NOTICE = "These are placeholder batteries, not your Sun Daddy catalog.";
 
 export type BatteryRow = {
   key: string;
@@ -28,7 +34,18 @@ export type BatteryRow = {
   discharge: string;
   cost: string;
   extra: string;
+  inProject: boolean;
 };
+
+export type ProjectPick = {
+  id: string;
+  quantity: number | null;
+};
+
+export type CatalogStatus =
+  | { state: "loading" }
+  | { state: "ready"; count: number }
+  | { state: "placeholder"; notice: string };
 
 export type SimpleRateInput = {
   flatEnergy: string;
@@ -64,6 +81,7 @@ export type SweepForm = {
   outageSoc: string;
   outageSolar: boolean;
   billedText: string;
+  includeQuantities?: Record<string, number[]>;
 };
 
 export type SimContext = {
@@ -94,7 +112,8 @@ export type RankSuccess = {
   sim: SimContext;
 };
 
-export function rowsFromBatteries(batteries: Battery[]): BatteryRow[] {
+export function rowsFromBatteries(batteries: Battery[], picks: readonly ProjectPick[] = []): BatteryRow[] {
+  const picked = new Set(picks.map((pick) => pick.id));
   return batteries.map((battery) => ({
     key: battery.id,
     name: battery.name,
@@ -103,7 +122,64 @@ export function rowsFromBatteries(batteries: Battery[]): BatteryRow[] {
     discharge: String(battery.max_discharge_rate_kw),
     cost: String(battery.cost_per_unit),
     extra: String(battery.cost_per_additional_unit ?? battery.cost_per_unit),
+    inProject: picked.has(battery.id),
   }));
+}
+
+export function readProjectPicks(selections: readonly SelectedBattery[] | undefined): ProjectPick[] {
+  if (!Array.isArray(selections)) return [];
+  const picks: ProjectPick[] = [];
+  for (const entry of selections) {
+    const raw = entry?.battery_id as unknown;
+    const id = typeof raw === "number" && Number.isFinite(raw) ? String(raw) : typeof raw === "string" ? raw.trim() : "";
+    if (!id) continue;
+    const quantity = Number.isInteger(entry.quantity) && (entry.quantity ?? 0) >= 1 ? entry.quantity : null;
+    picks.push({ id, quantity });
+  }
+  return picks;
+}
+
+export function includeQuantities(picks: readonly ProjectPick[]): Record<string, number[]> {
+  const include: Record<string, number[]> = {};
+  for (const pick of picks) {
+    if (pick.quantity == null) continue;
+    include[pick.id] = [pick.quantity];
+  }
+  return include;
+}
+
+export function catalogSourceLabel(status: CatalogStatus, placeholderCount: number): string {
+  if (status.state === "loading") return "Battery catalog: loading Sun Daddy…";
+  if (status.state === "ready") return `Battery catalog: Sun Daddy (${countLabel(status.count)})`;
+  return `Battery catalog: example placeholders (${countLabel(placeholderCount)})`;
+}
+
+function countLabel(count: number): string {
+  return `${count} ${count === 1 ? "battery" : "batteries"}`;
+}
+
+export function missingPickNote(picks: readonly ProjectPick[], ids: ReadonlySet<string>): string | null {
+  const missing = picks.filter((pick) => !ids.has(pick.id));
+  if (missing.length === 0) return null;
+  const list = missing.map((pick) => pick.id).join(", ");
+  return missing.length === 1
+    ? `Selected battery ${list} is not in the loaded catalog.`
+    : `Selected batteries ${list} are not in the loaded catalog.`;
+}
+
+export function sameBatteryRows(current: readonly BatteryRow[], next: readonly BatteryRow[]): boolean {
+  if (current.length !== next.length) return false;
+  return current.every(
+    (row, index) =>
+      row.key === next[index]?.key &&
+      row.name === next[index]?.name &&
+      row.usable === next[index]?.usable &&
+      row.charge === next[index]?.charge &&
+      row.discharge === next[index]?.discharge &&
+      row.cost === next[index]?.cost &&
+      row.extra === next[index]?.extra &&
+      row.inProject === next[index]?.inProject,
+  );
 }
 
 export function runSweep(form: SweepForm): SweepSuccess | SweepFailure {
@@ -128,8 +204,8 @@ export function runSweep(form: SweepForm): SweepSuccess | SweepFailure {
       outageSoc: form.outageSoc,
       outageSolar: form.outageSolar,
     });
-    if (!(quantity >= 1) || !Number.isInteger(quantity) || quantity > 12) {
-      return { ok: false, error: "Max units must be a whole number from 1 to 12." };
+    if (!(quantity >= 1) || !Number.isInteger(quantity) || quantity > MAX_UNITS) {
+      return { ok: false, error: `Max units must be a whole number from 1 to ${MAX_UNITS}.` };
     }
     if (!(min >= 0) || !(max <= 1) || !(min < max)) {
       return { ok: false, error: "The state-of-charge window must sit between 0% and 100%, with the max above the min." };
@@ -149,6 +225,7 @@ export function runSweep(form: SweepForm): SweepSuccess | SweepFailure {
       rate_escalator: rateEscalator,
       analysis_years: yearsCount,
       backup,
+      include_quantities: form.includeQuantities,
     });
     return {
       ok: true,

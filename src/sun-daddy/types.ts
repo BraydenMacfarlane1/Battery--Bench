@@ -10,6 +10,12 @@ export type NormalizedEconomics = {
   system_size_kw: number | null;
 };
 
+/** A row from `project.economics.batteries`. Quantity is null when the export omits a whole-number count. */
+export type SelectedBattery = {
+  battery_id: string;
+  quantity: number | null;
+};
+
 export type NormalizedSolarSeries = {
   solar_type: string | null;
   label: string;
@@ -40,6 +46,8 @@ export type NormalizedStudy = {
   pre_rate: NormalizedRate;
   post_rates: NormalizedRate[];
   batteries: Battery[];
+  /** Batteries and quantities chosen on the project. The catalog itself stays separate. */
+  selected_batteries: SelectedBattery[];
   economics: NormalizedEconomics;
 };
 

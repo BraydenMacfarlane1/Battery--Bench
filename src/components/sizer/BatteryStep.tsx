@@ -80,6 +80,7 @@ export function BatteryStep() {
             ctx={sizer.rankContext}
             selected={selection.selected}
             pinned={selection.pinned}
+            projectIds={sizer.projectIds}
             onBattery={sizer.chooseBattery}
             onQuantity={sizer.chooseQuantity}
             onReset={sizer.resetOverride}
@@ -133,7 +134,10 @@ export function BatteryStep() {
             <input value={sizer.maxQuantity} onChange={(event) => sizer.setMaxQuantity(event.target.value)} />
           </label>
         </div>
-        <p className="meta">Defaults are planning assumptions: 90% round trip, 2% degradation, 6% discount, 2% escalator, 25 years.</p>
+        <p className="meta">
+          Defaults are planning assumptions: 90% round trip, 2% degradation, 6% discount, 2% escalator, 25 years. Max units
+          is a ceiling. Each battery is swept only across quantities that can matter for this site&apos;s peak.
+        </p>
       </details>
     </div>
   );

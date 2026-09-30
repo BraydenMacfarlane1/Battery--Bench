@@ -58,6 +58,11 @@ export type SweepInput = {
   /** Default 25. */
   analysis_years?: number;
   /**
+   * Extra quantities to keep for a battery id, such as a project selection.
+   * Values outside 1..max_quantity are ignored. The peak-scaled range is unchanged otherwise.
+   */
+  include_quantities?: Readonly<Record<string, readonly number[]>>;
+  /**
    * Fixed critical load, every hour. Used only when `backup` is omitted.
    * A load above discharge power reports zero backup hours.
    */
@@ -246,6 +251,135 @@ export function bestQuantityForBattery(
   return 1;
 }
 
+/** Simulated stacks across one catalog. Keeps a mixed catalog of large and small units responsive. */
+export const MAX_SWEEP_POINTS = 24;
+
+/** Quantities sampled for one battery before the catalog-wide cap thins the list. */
+const MAX_POINTS_PER_BATTERY = 6;
+
+/** A unit whose discharge is at least this multiple of site peak is swept at quantity 1. */
+const OVERSIZED_POWER_RATIO = 1.5;
+
+/** Hours of site peak a small unit should be able to cover before the sweep stops adding units. */
+const ENERGY_COVER_HOURS = 2;
+
+export function peakLoadKw(load: readonly number[]): number {
+  let peak = 0;
+  for (const value of load) {
+    if (value > peak) peak = value;
+  }
+  return peak;
+}
+
+/**
+ * Quantities worth simulating for one battery against the site peak.
+ * `maxQuantity` is still the ceiling. A unit already far above the peak stays at 1.
+ * A unit too small to matter at low counts is sampled up to the peak, not every integer.
+ */
+export function quantitiesForBattery(
+  battery: Battery,
+  peakKw: number,
+  maxQuantity: number,
+  include: readonly number[] = [],
+): number[] {
+  const ceiling = quantityCeiling(battery, peakKw, maxQuantity);
+  const sampled = ceiling <= 4 ? integersThrough(ceiling) : sampleQuantities(ceiling, MAX_POINTS_PER_BATTERY);
+  return mergeQuantities(sampled, include, maxQuantity);
+}
+
+/** One quantity list per battery, thinned so the catalog stays within {@link MAX_SWEEP_POINTS}. */
+export function planSweepQuantities(
+  batteries: readonly Battery[],
+  peakKw: number,
+  maxQuantity: number,
+  includeById: Readonly<Record<string, readonly number[]>> = {},
+): number[][] {
+  const pinned = batteries.map((battery) => pinnedQuantities(includeById[battery.id] ?? [], maxQuantity));
+  const lists = batteries.map((battery, index) =>
+    quantitiesForBattery(battery, peakKw, maxQuantity, [...pinned[index]]),
+  );
+  return thinToBudget(lists, pinned);
+}
+
+function pinnedQuantities(include: readonly number[], maxQuantity: number): Set<number> {
+  const pinned = new Set<number>();
+  for (const qty of include) {
+    if (Number.isInteger(qty) && qty >= 1 && qty <= maxQuantity) pinned.add(qty);
+  }
+  return pinned;
+}
+
+function quantityCeiling(battery: Battery, peakKw: number, maxQuantity: number): number {
+  const peak = Number.isFinite(peakKw) && peakKw > 0 ? peakKw : 0;
+  const unitKw = battery.max_discharge_rate_kw;
+  const unitKwh = battery.usable_capacity_kwh;
+  if (!(peak > 0) || !(unitKw > 0) || !(unitKwh > 0)) {
+    return Math.min(maxQuantity, MAX_POINTS_PER_BATTERY);
+  }
+  if (unitKw >= peak * OVERSIZED_POWER_RATIO) return 1;
+  const coverPower = Math.max(1, Math.ceil(peak / unitKw));
+  const coverEnergy = Math.max(1, Math.ceil((peak * ENERGY_COVER_HOURS) / unitKwh));
+  const useful = Math.max(coverPower, Math.min(coverEnergy, coverPower * 2));
+  return Math.max(1, Math.min(maxQuantity, useful));
+}
+
+function integersThrough(max: number): number[] {
+  const quantities: number[] = [];
+  for (let quantity = 1; quantity <= max; quantity += 1) quantities.push(quantity);
+  return quantities;
+}
+
+function sampleQuantities(hi: number, points: number): number[] {
+  const count = Math.max(1, Math.min(points, hi));
+  if (count === 1) return [1];
+  const chosen = new Set<number>([1, hi]);
+  const steps = count - 1;
+  for (let step = 1; step < steps; step += 1) {
+    const value = Math.round(Math.exp((Math.log(hi) * step) / steps));
+    if (value > 1 && value < hi) chosen.add(value);
+  }
+  let cursor = 2;
+  while (chosen.size < count && cursor < hi) {
+    chosen.add(cursor);
+    cursor += 1;
+  }
+  return [...chosen].sort((a, b) => a - b);
+}
+
+function mergeQuantities(base: readonly number[], include: readonly number[], maxQuantity: number): number[] {
+  const chosen = new Set(base);
+  for (const qty of include) {
+    if (Number.isInteger(qty) && qty >= 1 && qty <= maxQuantity) chosen.add(qty);
+  }
+  return [...chosen].sort((a, b) => a - b);
+}
+
+function thinToBudget(lists: number[][], pinned: Array<Set<number>>): number[][] {
+  const next = lists.map((list) => [...list]);
+  const total = () => next.reduce((sum, list) => sum + list.length, 0);
+  while (total() > MAX_SWEEP_POINTS) {
+    let index = -1;
+    let longest = 0;
+    for (let i = 0; i < next.length; i += 1) {
+      if (next[i].length <= longest) continue;
+      if (removablePoints(next[i], pinned[i]).length === 0) continue;
+      longest = next[i].length;
+      index = i;
+    }
+    if (index < 0) break;
+    const droppable = removablePoints(next[index], pinned[index]);
+    const drop = droppable[Math.floor((droppable.length - 1) / 2)];
+    next[index] = next[index].filter((quantity) => quantity !== drop);
+  }
+  return next;
+}
+
+function removablePoints(list: readonly number[], pinned: ReadonlySet<number>): number[] {
+  if (list.length <= 1) return [];
+  const highest = list[list.length - 1];
+  return list.filter((quantity) => quantity !== 1 && quantity !== highest && !pinned.has(quantity));
+}
+
 export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
   if (!Number.isInteger(input.max_quantity) || input.max_quantity < 1) {
     throw new Error("max_quantity must be an integer of 1 or more.");
@@ -257,10 +391,16 @@ export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
   const socMin = input.soc_min ?? 0;
   const socMax = input.soc_max ?? 1;
   const scenario = backupScenario(input);
+  const plans = planSweepQuantities(
+    input.batteries,
+    peakLoadKw(input.load_kwh),
+    input.max_quantity,
+    input.include_quantities,
+  );
 
   const ranked: CandidateMetrics[] = [];
-  for (const battery of input.batteries) {
-    for (let quantity = 1; quantity <= input.max_quantity; quantity += 1) {
+  input.batteries.forEach((battery, index) => {
+    for (const quantity of plans[index] ?? [1]) {
       const simulation = simulateDispatch({
         load_kwh: input.load_kwh,
         solar_kwh: input.solar_kwh,
@@ -298,7 +438,7 @@ export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
         }),
       );
     }
-  }
+  });
   return ranked;
 }
 

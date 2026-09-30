@@ -104,6 +104,7 @@ export function ResultsStep() {
         ctx={sizer.rankContext}
         selected={selected}
         pinned={picked.pinned}
+        projectIds={sizer.projectIds}
         onBattery={sizer.chooseBattery}
         onQuantity={sizer.chooseQuantity}
         onReset={sizer.resetOverride}

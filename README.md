@@ -46,7 +46,7 @@ Hourly energy understates a 15-minute billing peak. Pass optional `billed_peak_k
 
 ### Sweep and ranking
 
-`sweepBatteries` runs every catalog battery for quantities 1 through N. Installed cost is `cost_per_unit` for the first unit plus `cost_per_additional_unit` after that.
+`sweepBatteries` runs every catalog battery over a quantity range scaled to the site's peak load, up to the caller's max quantity. A unit whose discharge is already far above that peak is simulated at quantity 1. A small unit is sampled (not every integer) up to the count that covers the peak, and the whole catalog is capped at 24 stacks. Pass `include_quantities` to keep a specific quantity, such as one selected on a project. Installed cost is `cost_per_unit` for the first unit plus `cost_per_additional_unit` after that.
 
 Simple payback is installed cost ÷ first-year savings. It is blank when savings are not positive. Lifetime NPV and IRR use a default **25-year** life, a **6%** discount rate, and a **2%** rate escalator. Those three are planning defaults, not a forecast. Year-y savings scale by `(1 − degradation)^(y−1) × (1 + escalator)^(y−1)`. The cash flow is pre-tax and ignores incentives.
 
@@ -58,11 +58,11 @@ Ranking modes are plain objects with a `compare` function: max annual savings (d
 
 ## Hourly sizer screen
 
-`npm run dev` opens a five-step wizard. Nothing is ranked until a study is loaded, so Next stays disabled on the first step.
+`npm run dev` opens a five-step wizard. Nothing is ranked until a study is loaded, so Next stays disabled on the first step. On load the screen asks `GET /api/sun-daddy/batteries` and uses that catalog for the ranking sweep and the override list, including when the load is the synthetic example, a CSV, or a Sun Daddy project. Opening a project does not replace the catalog; batteries listed on `project.economics.batteries` are marked in this project and the override starts on that battery and quantity. If the catalog request fails or returns nothing, the screen falls back to example placeholder cabinets and says so. The round-trip efficiency field (default 90%) is what the sweep uses. Sun Daddy does not store that value.
 
-1. **Project.** Sun Daddy search lists customers (grouped by `customer_name`; a missing name is "No customer"). Open a customer to see that customer's projects, then load one. Quiet alternatives: example data, or an 8,760-hour CSV.
+1. **Project.** Sun Daddy search lists customers (grouped by `customer_name`; a missing name is "No customer"). Open a customer to see that customer's projects, then load one. Quiet alternatives: example data, or an 8,760-hour CSV. The catalog status and a reload button stay above the step.
 2. **Site and rate.** Customer, project, utility, rate, annual kWh, peak kW, and solar. Data warnings sit in "Things to check". Billed monthly peaks and a simple rate override are collapsed.
-3. **Battery and goal.** Six goal cards (max savings is the default). Optional battery and quantity override. Efficiency, degradation, discount rate, escalator, analysis years, and strategy sit under "Advanced assumptions". If Sun Daddy's battery catalog is missing, the screen says the example catalog is the fallback.
+3. **Battery and goal.** Six goal cards (max savings is the default). Optional battery and quantity override. Efficiency, degradation, discount rate, escalator, analysis years, strategy, and max units (1–48, a ceiling on the peak-scaled sweep) sit under "Advanced assumptions".
 4. **Backup.** Optional. Whole building or backup loads (fixed kW or a percent), starting charge, and the optimistic solar credit. Skip leaves the defaults.
 5. **Results.** Recommendation, stat tiles, comparison (click a row to switch; Reset to best returns to the mode's pick), monthly bills, peak-day dispatch, savings versus size, and backup duration. Download a PDF or a CSV of the comparison and the monthly bills.
 

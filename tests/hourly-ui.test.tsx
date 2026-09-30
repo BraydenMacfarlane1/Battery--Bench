@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
@@ -275,6 +275,115 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("comparison-table").textContent).toMatch(/\d+\.\d h/);
   });
 
+  it("loads the Sun Daddy battery catalog on startup", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/sun-daddy/batteries")) return jsonResponse({ batteries: catalogFixture, warnings: [] });
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    });
+    expect(screen.queryByTestId("catalog-placeholder")).toBeNull();
+    await useExample(user);
+    await next(user);
+    await next(user);
+    await next(user);
+    await next(user);
+    const battery = screen.getByLabelText("Battery");
+    for (const name of ["Synthetic forty", "Synthetic sixty", "Synthetic block"]) {
+      expect(screen.getByTestId("comparison-table").textContent).toContain(name);
+      expect(within(battery).getByRole("option", { name })).toBeTruthy();
+    }
+    expect(screen.queryByRole("option", { name: /Example Small cabinet/ })).toBeNull();
+    const callsBeforeReload = fetchMock.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Reload catalog" }));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeReload));
+    expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+
+    const before = screen.getByTestId("top-pick").textContent;
+    await user.click(screen.getByRole("button", { name: "Step 3: Battery" }));
+    await user.click(screen.getByText("Advanced assumptions"));
+    const efficiency = screen.getByLabelText("Round-trip efficiency (%)");
+    await user.clear(efficiency);
+    await user.type(efficiency, "55");
+    await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
+    await waitFor(() => expect(screen.getByTestId("top-pick").textContent).not.toBe(before));
+  });
+
+  it("shows placeholder batteries when the catalog cannot be loaded", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    );
+    render(<App />);
+    expect((await screen.findByTestId("catalog-placeholder")).textContent).toMatch(/placeholder batteries/i);
+    expect(screen.getByTestId("catalog-placeholder").textContent).toMatch(/not your Sun Daddy catalog/i);
+    expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: example placeholders (3 batteries)");
+    await goToResults(user);
+    const table = screen.getByTestId("comparison-table").textContent ?? "";
+    expect(table).toContain("Example Small cabinet");
+    expect(table).toContain("Example Medium cabinet");
+    expect(table).toContain("Example Large cabinet");
+  });
+
+  it("falls back to placeholders when the catalog is empty", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ batteries: [], warnings: ["none"] })));
+    render(<App />);
+    expect((await screen.findByTestId("catalog-placeholder")).textContent).toMatch(/placeholder batteries/i);
+    expect(screen.getByTestId("catalog-source").textContent).toMatch(/example placeholders/);
+    await goToResults(user);
+    expect(screen.getByTestId("comparison-table").textContent).toContain("Example Large cabinet");
+  });
+
+  it("keeps the full catalog when a project lists one battery", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) return jsonResponse({ batteries: catalogFixture, warnings: [] });
+        if (url.includes("/api/sun-daddy/projects")) {
+          return jsonResponse({
+            projects: [{ id: 93, name: "Synthetic warehouse", customer_name: "Synthetic Customer" }],
+            warnings: [],
+          });
+        }
+        if (url.includes("/api/sun-daddy/project/93")) return jsonResponse({ normalized: projectWithOneBattery() });
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    });
+    await useExample(user);
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await user.click(screen.getByRole("button", { name: /Synthetic warehouse/ }));
+    expect(await screen.findByText("Loaded Synthetic warehouse.")).toBeTruthy();
+    await next(user);
+    await next(user);
+    await next(user);
+    await next(user);
+    const battery = screen.getByLabelText("Battery");
+    expect(within(battery).getByRole("option", { name: /Synthetic forty — in this project/ })).toBeTruthy();
+    expect(within(battery).getByRole("option", { name: "Synthetic sixty" })).toBeTruthy();
+    expect(within(battery).getByRole("option", { name: "Synthetic block" })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId("selection-title").textContent).toBe("2 × Synthetic forty");
+    });
+    expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    expect(screen.getByTestId("comparison-table").textContent).toContain("Synthetic sixty");
+  });
+
   it("opens the Schedule 6 worksheet from the header", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -283,3 +392,84 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("gross-demand").textContent).toContain("1,131");
   });
 });
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** Export-shaped catalog rows. Ids are numbers, the way the live export sends them. */
+const catalogFixture = [
+  {
+    id: 101,
+    name: "Synthetic forty",
+    manufacturer: "Synthetic",
+    model: "S40",
+    usable_capacity_kwh: 40,
+    max_charge_rate_kw: 20,
+    max_discharge_rate_kw: 20,
+    cost_per_unit: 22000,
+    cost_per_additional_unit: 18000,
+    round_trip_efficiency: 0.9,
+  },
+  {
+    id: 102,
+    name: "Synthetic sixty",
+    manufacturer: "Synthetic",
+    model: "S60",
+    usable_capacity_kwh: 60,
+    max_charge_rate_kw: 30,
+    max_discharge_rate_kw: 30,
+    cost_per_unit: 30000,
+    round_trip_efficiency: 0.9,
+  },
+  {
+    id: 103,
+    name: "Synthetic block",
+    manufacturer: "Synthetic",
+    model: "BLK",
+    usable_capacity_kwh: 3854,
+    max_charge_rate_kw: 1927,
+    max_discharge_rate_kw: 1927,
+    cost_per_unit: 800000,
+    round_trip_efficiency: 0.9,
+  },
+];
+
+function projectWithOneBattery() {
+  return {
+    schema_version: 1,
+    project_id: "93",
+    project_name: "Synthetic warehouse",
+    warnings: [],
+    load_kwh: null,
+    monthly_kwh: null,
+    billed_peak_kw: new Array<number | null>(12).fill(null),
+    solar_kwh: null,
+    solar_series: [],
+    pre_rate: { rate: null, warnings: [] },
+    post_rates: [],
+    batteries: [
+      {
+        id: "101",
+        name: "Synthetic forty",
+        usable_capacity_kwh: 40,
+        max_charge_rate_kw: 20,
+        max_discharge_rate_kw: 20,
+        cost_per_unit: 22000,
+        round_trip_efficiency: 0.9,
+      },
+    ],
+    selected_batteries: [{ battery_id: 101, quantity: 2 }],
+    economics: {
+      discount_rate: 0.06,
+      rate_escalator: null,
+      federal_tax_rate: null,
+      state_tax_rate: null,
+      analysis_period: 20,
+      system_size_kw: 120,
+    },
+  };
+}

@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HOURS_PER_YEAR } from "../dispatch/calendar";
-import { BACKUP_DURATION, CHEAPEST_PEAK_TARGET, RANKING_MODES } from "../dispatch/rank";
+import { BACKUP_DURATION, CHEAPEST_PEAK_TARGET, RANKING_MODES, bestQuantityForBattery } from "../dispatch/rank";
 import { simulateDispatch } from "../dispatch/simulate";
-import { syntheticExample } from "../dispatch/synthetic-example";
-import type { Battery, DispatchStrategy, RateModel } from "../dispatch/types";
+import { syntheticBatteries, syntheticExample } from "../dispatch/synthetic-example";
+import type { DispatchStrategy, RateModel } from "../dispatch/types";
 import type { BackupLoadMode, BackupLoadShape } from "../dispatch/backup";
 import { parseHourlyNumbers } from "../dispatch/series-input";
 import { groupProjectsByCustomer } from "../sun-daddy/customers";
@@ -13,13 +13,21 @@ import { InterconnectPanel } from "./InterconnectPanel";
 import { SizerProvider, type StudyMeta, type SizerContextValue } from "./sizer/context";
 import { WizardChrome } from "./sizer/WizardChrome";
 import {
+  PLACEHOLDER_NOTICE,
+  catalogSourceLabel,
   chooseQuantityForBattery,
+  includeQuantities,
+  missingPickNote,
   rankSweep,
+  readProjectPicks,
   resolveSelection,
   rowsFromBatteries,
   runSweep,
+  sameBatteryRows,
   seriesByBattery,
   type BatteryRow,
+  type CatalogStatus,
+  type ProjectPick,
 } from "./sizer/model";
 import { peakOf, sum } from "./sizer/format";
 import { canAdvanceWizard, isWizardStep, type WizardStepId } from "./sizer/wizard";
@@ -42,10 +50,11 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
   const [peakDemand, setPeakDemand] = useState("8");
   const [fixedCharge, setFixedCharge] = useState("50");
   const [exportCredit, setExportCredit] = useState("0.03");
-  const [batteries, setBatteries] = useState<BatteryRow[]>(rowsFromBatteries(example.batteries));
-  const [batteryOrigin, setBatteryOrigin] = useState<"example" | "sun" | "project">("example");
-  const [sunCatalog, setSunCatalog] = useState<Battery[] | null>(null);
-  const [catalogStatus, setCatalogStatus] = useState<"loading" | "sun" | "example">("loading");
+  const [batteries, setBatteries] = useState<BatteryRow[]>(rowsFromBatteries(syntheticBatteries()));
+  const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>({ state: "loading" });
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [projectPicks, setProjectPicks] = useState<ProjectPick[]>([]);
+  const [pickEpoch, setPickEpoch] = useState(0);
   const [strategy, setStrategy] = useState<DispatchStrategy>("combined");
   const [modeId, setModeId] = useState(RANKING_MODES[0].id);
   const [rte, setRte] = useState("90");
@@ -55,7 +64,7 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
   const [discount, setDiscount] = useState("6");
   const [escalator, setEscalator] = useState("2");
   const [analysisYears, setAnalysisYears] = useState("25");
-  const [maxQuantity, setMaxQuantity] = useState("3");
+  const [maxQuantity, setMaxQuantity] = useState("24");
   const [criticalKw, setCriticalKw] = useState("25");
   const [backupHours, setBackupHours] = useState("4");
   const [backupMode, setBackupMode] = useState<BackupLoadMode>("backup_loads");
@@ -80,6 +89,12 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
   const [tariffWarnings, setTariffWarnings] = useState<string[]>([]);
   const [meta, setMeta] = useState<StudyMeta>({ customerName: "—", projectName: "—", utility: null });
   const [busy, setBusy] = useState(false);
+  const catalogRequest = useRef(0);
+  const projectPicksRef = useRef(projectPicks);
+  const batteryRowsRef = useRef(batteries);
+  const appliedPickEpoch = useRef(0);
+  projectPicksRef.current = projectPicks;
+  batteryRowsRef.current = batteries;
 
   const needsRank = step >= 3 && loadKwh.length === HOURS_PER_YEAR;
   const sweep = useMemo(
@@ -108,6 +123,7 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
         outageSoc,
         outageSolar,
         billedText,
+        includeQuantities: includeQuantities(projectPicks),
       });
     },
     [
@@ -141,6 +157,7 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
       peakDemand,
       fixedCharge,
       exportCredit,
+      projectPicks,
     ],
   );
 
@@ -174,43 +191,77 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
   }, [model, selected]);
 
   useEffect(() => {
-    if (!override || !model.ok) return;
-    const alive = model.ranked.some((row) => row.battery.id === override.batteryId && row.quantity === override.quantity);
-    if (!alive) setOverride(null);
-  }, [model, override]);
-
-  useEffect(() => {
-    let cancel = false;
-    void (async () => {
-      try {
-        const response = await fetch("/api/sun-daddy/batteries");
-        const body: unknown = await response.json();
-        if (cancel) return;
-        if (!response.ok) {
-          setCatalogStatus("example");
-          return;
-        }
-        const parsed = normalizeBatteryCatalog(body);
-        if (parsed.batteries.length === 0) {
-          setCatalogStatus("example");
-          return;
-        }
-        setSunCatalog(parsed.batteries);
-        setCatalogStatus("sun");
-      } catch {
-        if (!cancel) setCatalogStatus("example");
-      }
-    })();
-    return () => {
-      cancel = true;
-    };
+    void loadCatalog();
   }, []);
 
   useEffect(() => {
-    if (!sunCatalog || source !== "none") return;
-    setBatteries(rowsFromBatteries(sunCatalog));
-    setBatteryOrigin("sun");
-  }, [sunCatalog, source]);
+    if (appliedPickEpoch.current === pickEpoch) return;
+    if (!model.ok) return;
+    if (projectPicks.length === 0) {
+      appliedPickEpoch.current = pickEpoch;
+      return;
+    }
+    if (catalogStatus.state === "loading") return;
+    const pick = projectPicks.find((entry) => model.ranked.some((row) => row.battery.id === entry.id));
+    if (!pick) {
+      appliedPickEpoch.current = pickEpoch;
+      return;
+    }
+    const exact =
+      pick.quantity != null && model.ranked.some((row) => row.battery.id === pick.id && row.quantity === pick.quantity);
+    const quantity = exact ? (pick.quantity ?? 1) : bestQuantityForBattery(model.ranked, pick.id, model.mode, model.ctx);
+    appliedPickEpoch.current = pickEpoch;
+    setOverride({ batteryId: pick.id, quantity });
+  }, [model, projectPicks, pickEpoch, catalogStatus]);
+
+  useEffect(() => {
+    if (!override || !model.ok) return;
+    if (appliedPickEpoch.current !== pickEpoch) return;
+    const alive = model.ranked.some((row) => row.battery.id === override.batteryId && row.quantity === override.quantity);
+    if (!alive) setOverride(null);
+  }, [model, override, pickEpoch]);
+
+  async function loadCatalog() {
+    const requestId = catalogRequest.current + 1;
+    catalogRequest.current = requestId;
+    setCatalogBusy(true);
+    try {
+      const response = await fetch("/api/sun-daddy/batteries");
+      let body: unknown = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      if (requestId !== catalogRequest.current) return;
+      if (!response.ok || body == null) {
+        showPlaceholderCatalog();
+        return;
+      }
+      const catalog = normalizeBatteryCatalog(body);
+      if (catalog.batteries.length === 0) {
+        showPlaceholderCatalog();
+        return;
+      }
+      setBatteries(rowsFromBatteries(catalog.batteries, projectPicksRef.current));
+      setCatalogStatus({ state: "ready", count: catalog.batteries.length });
+      const note = missingPickNote(projectPicksRef.current, new Set(catalog.batteries.map((battery) => battery.id)));
+      if (note) {
+        setStudyWarnings((current) => (current.includes(note) ? current : [...current, note]));
+      }
+    } catch {
+      if (requestId !== catalogRequest.current) return;
+      showPlaceholderCatalog();
+    } finally {
+      if (requestId === catalogRequest.current) setCatalogBusy(false);
+    }
+  }
+
+  function showPlaceholderCatalog() {
+    const next = rowsFromBatteries(syntheticBatteries(), projectPicksRef.current);
+    setBatteries((current) => (sameBatteryRows(current, next) ? current : next));
+    setCatalogStatus({ state: "placeholder", notice: PLACEHOLDER_NOTICE });
+  }
 
   const hasData = loadKwh.length === HOURS_PER_YEAR;
   const canNext = canAdvanceWizard(step, { hasData, modelOk: model.ok });
@@ -308,16 +359,15 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
       setRate(study.pre_rate.rate);
       setSimpleRate(false);
     }
-    if (study.batteries.length > 0) {
-      setBatteries(rowsFromBatteries(study.batteries));
-      setBatteryOrigin("project");
-    } else if (sunCatalog && sunCatalog.length > 0) {
-      setBatteries(rowsFromBatteries(sunCatalog));
-      setBatteryOrigin("sun");
-    } else {
-      setBatteries(rowsFromBatteries(syntheticExample().batteries));
-      setBatteryOrigin("example");
+    const picks = readProjectPicks(study.selected_batteries);
+    if (catalogStatus.state !== "loading") {
+      const note = missingPickNote(picks, new Set(batteryRowsRef.current.map((row) => row.key)));
+      if (note) notes.push(note);
     }
+    projectPicksRef.current = picks;
+    setProjectPicks(picks);
+    setBatteries((current) => current.map((row) => ({ ...row, inProject: picks.some((pick) => pick.id === row.key) })));
+    setPickEpoch((epoch) => epoch + 1);
     if (study.economics.discount_rate != null) setDiscount(String(study.economics.discount_rate * 100));
     if (study.economics.rate_escalator != null) setEscalator(String(study.economics.rate_escalator * 100));
     if (study.economics.analysis_period != null) setAnalysisYears(String(study.economics.analysis_period));
@@ -333,7 +383,6 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     setStudyWarnings(notes);
     setInputWarnings([]);
     setLoadedNote(study.project_name ? `Loaded ${study.project_name}.` : "Project loaded.");
-    setOverride(null);
   }
 
   function loadExample() {
@@ -341,8 +390,6 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     setLoadKwh(fresh.load_kwh);
     setSolarKwh(fresh.solar_kwh);
     setRate(fresh.rate);
-    setBatteries(rowsFromBatteries(fresh.batteries));
-    setBatteryOrigin("example");
     setSimpleRate(false);
     setBilledText("140");
     setSource("example");
@@ -353,10 +400,17 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     setSunError(false);
     setMeta({ customerName: "Example customer", projectName: "Synthetic building", utility: null });
     setLoadedNote("Example data is ready.");
-    setOverride(null);
     setDiscount("6");
     setEscalator("2");
     setAnalysisYears("25");
+    clearProjectMarks();
+  }
+
+  function clearProjectMarks() {
+    projectPicksRef.current = [];
+    setProjectPicks([]);
+    setBatteries((current) => (current.some((row) => row.inProject) ? current.map((row) => ({ ...row, inProject: false })) : current));
+    setOverride(null);
   }
 
   function readLoadFile(text: string) {
@@ -396,7 +450,12 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     setOverride({ batteryId: selected.battery.id, quantity });
   }
 
-  const catalogNotice = catalogNoticeText(catalogStatus, batteryOrigin);
+  const catalogNotice =
+    catalogStatus.state === "loading"
+      ? "Checking Sun Daddy for a battery catalog."
+      : catalogStatus.state === "placeholder"
+        ? catalogStatus.notice
+        : "Battery catalog loaded from Sun Daddy.";
   const activeRateName = simpleRate ? "Simple rate (not a utility tariff)" : (rate.name ?? "Rate");
   const value: SizerContextValue = {
     surface,
@@ -465,6 +524,11 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     backupHours,
     setBackupHours,
     catalogNotice,
+    catalogSource: catalogSourceLabel(catalogStatus, batteries.length),
+    catalogPlaceholder: catalogStatus.state === "placeholder" ? catalogStatus.notice : null,
+    catalogBusy,
+    reloadCatalog: () => void loadCatalog(),
+    projectIds: projectPicks.map((pick) => pick.id),
     strategy,
     setStrategy,
     rte,
@@ -528,17 +592,4 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
       )}
     </SizerProvider>
   );
-}
-
-function catalogNoticeText(
-  catalogStatus: "loading" | "sun" | "example",
-  batteryOrigin: "example" | "sun" | "project",
-): string {
-  if (catalogStatus === "loading") return "Checking Sun Daddy for a battery catalog.";
-  if (batteryOrigin === "project") return "These batteries came with the project.";
-  if (batteryOrigin === "sun") return "Battery catalog loaded from Sun Daddy.";
-  if (catalogStatus === "example") {
-    return "Example battery catalog. Sun Daddy's catalog wasn't available, so the built-in list is the fallback.";
-  }
-  return "Example batteries are in use for this synthetic building. Sun Daddy's catalog is available when a project does not include its own.";
 }

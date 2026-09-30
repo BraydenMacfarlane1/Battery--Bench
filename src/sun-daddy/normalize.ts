@@ -8,6 +8,7 @@ import {
   type NormalizedSolarSeries,
   type NormalizedStudy,
   type ProjectListItem,
+  type SelectedBattery,
 } from "./types";
 
 const EXPORT_CREDIT_FIELDS = [
@@ -62,7 +63,7 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
   warnings.push(...preRate.warnings);
   for (const post of postRates) warnings.push(...post.warnings);
   const batteries = normalizeBatteryList(root.batteries, warnings);
-  noteBatterySelections(economicsRecord?.batteries, batteries, warnings);
+  const selectedBatteries = readBatterySelections(economicsRecord?.batteries, batteries, warnings);
   const economics = normalizeEconomics(economicsRecord, warnings);
 
   return {
@@ -78,6 +79,7 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
     pre_rate: preRate,
     post_rates: postRates,
     batteries,
+    selected_batteries: selectedBatteries,
     economics,
   };
 }
@@ -886,13 +888,14 @@ function skippedIdWarning(value: unknown, label: string): string {
   return `A ${label} had an id of type ${type}, which is not a string or number, and was skipped.`;
 }
 
-function noteBatterySelections(value: unknown, batteries: readonly Battery[], warnings: WarningBag): void {
-  if (value == null) return;
+function readBatterySelections(value: unknown, batteries: readonly Battery[], warnings: WarningBag): SelectedBattery[] {
+  if (value == null) return [];
   if (!Array.isArray(value)) {
     warnings.push("Project battery selections were not an array and were skipped.");
-    return;
+    return [];
   }
   const known = new Set(batteries.map((battery) => battery.id));
+  const selected: SelectedBattery[] = [];
   for (const entry of value) {
     const record = asRecord(entry);
     if (!record) {
@@ -907,7 +910,18 @@ function noteBatterySelections(value: unknown, batteries: readonly Battery[], wa
     if (known.size > 0 && !known.has(id)) {
       warnings.push(`Project battery ${id} was not in the battery list.`);
     }
+    let quantity: number | null = null;
+    if (record.quantity != null) {
+      const parsed = readFinite(record.quantity);
+      if (parsed == null || !Number.isInteger(parsed) || parsed < 1) {
+        warnings.push(`Project battery ${id} has a quantity that is not a whole number of 1 or more.`);
+      } else {
+        quantity = parsed;
+      }
+    }
+    selected.push({ battery_id: id, quantity });
   }
+  return selected;
 }
 
 function matchSeasonsToMonths(seasons: SeasonDef[], months: number[] | null): string[] | undefined {
@@ -985,6 +999,7 @@ function emptyStudy(warnings: string[]): NormalizedStudy {
     pre_rate: { rate: null, warnings: [] },
     post_rates: [],
     batteries: [],
+    selected_batteries: [],
     economics: {
       discount_rate: null,
       rate_escalator: null,
