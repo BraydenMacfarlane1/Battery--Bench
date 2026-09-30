@@ -114,18 +114,23 @@ export function ProjectStep() {
 
       {sizer.loadedNote ? (
         <p className="chip" role="status">
-          {sizer.loadedNote}
+          <span>{sizer.loadedNote}</span>
+          {sizer.loadSourceBadge ? (
+            <span className="source-badge" data-testid="load-source-badge">
+              {sizer.loadSourceBadge}
+            </span>
+          ) : null}
         </p>
       ) : null}
 
-      <p className="quiet-links">
-        <button type="button" className="link-button" onClick={sizer.loadExample}>
-          Use example data
-        </button>
-        <button type="button" className="link-button" onClick={() => sizer.setManualOpen(!sizer.manualOpen)}>
-          Upload CSVs / enter manually
-        </button>
-      </p>
+      {sizer.missingLoadMessage ? (
+        <div className="callout" role="status" id="missing-hourly-load" data-testid="missing-hourly-load">
+          <p>{sizer.missingLoadMessage}</p>
+          <LoadAlternatives />
+        </div>
+      ) : (
+        <LoadAlternatives />
+      )}
 
       {sizer.manualOpen ? (
         <fieldset className="presets manual-panel">
@@ -185,5 +190,19 @@ export function ProjectStep() {
         </fieldset>
       ) : null}
     </div>
+  );
+}
+
+function LoadAlternatives() {
+  const sizer = useSizer();
+  return (
+    <p className="quiet-links">
+      <button type="button" className="link-button" onClick={sizer.loadExample}>
+        Use example data
+      </button>
+      <button type="button" className="link-button" onClick={() => sizer.setManualOpen(!sizer.manualOpen)}>
+        Upload CSVs / enter manually
+      </button>
+    </p>
   );
 }

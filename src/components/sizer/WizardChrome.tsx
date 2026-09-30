@@ -117,7 +117,13 @@ export function WizardChrome() {
                   Skip this step
                 </button>
               ) : null}
-              <button type="button" className="btn btn-primary" onClick={sizer.goNext} disabled={!sizer.canNext}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={sizer.goNext}
+                disabled={!sizer.canNext}
+                aria-describedby={sizer.step === 1 && sizer.missingLoadMessage ? "missing-hourly-load" : undefined}
+              >
                 Next
               </button>
             </div>

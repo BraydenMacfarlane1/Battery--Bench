@@ -2,10 +2,10 @@
 
 Commercial battery sizing worksheet. It is not an engineering stamp or an interconnection approval.
 
-Two tools live here:
+The app opens on the hourly sizing wizard. The header is the Battery Bench name only.
 
 - **Hourly dispatch** (`src/dispatch/`) compares a battery stack with the same 8,760-hour load and solar on a tariff you pass in. Savings are baseline bill minus the bill with the battery.
-- **Schedule 6 worksheet** (the original screen) is a closed-form peak-shave check for Rocky Mountain Power Utah Schedule 6. That tariff is a built-in example. The hourly engine does not assume it.
+- **Schedule 6 sizing** (`src/sizing/`, `POST /api/size`) is a closed-form peak-shave check for Rocky Mountain Power Utah Schedule 6. That tariff is a built-in example. The hourly engine does not assume it. It is not a screen in the app.
 
 ## Hourly dispatch model
 
@@ -60,21 +60,21 @@ Ranking modes are plain objects with a `compare` function: max annual savings (d
 
 `npm run dev` opens a five-step wizard. Nothing is ranked until a study is loaded, so Next stays disabled on the first step. On load the screen asks `GET /api/sun-daddy/batteries` and uses that catalog for the ranking sweep and the override list, including when the load is the synthetic example, a CSV, or a Sun Daddy project. Opening a project does not replace the catalog; batteries listed on `project.economics.batteries` are marked in this project and the override starts on that battery and quantity. If the catalog request fails or returns nothing, the screen falls back to example placeholder cabinets and says so. The round-trip efficiency field (default 90%) is what the sweep uses. Sun Daddy does not store that value.
 
-1. **Project.** Sun Daddy search lists customers (grouped by `customer_name`; a missing name is "No customer"). Open a customer to see that customer's projects, then load one. Quiet alternatives: example data, or an 8,760-hour CSV. The catalog status and a reload button stay above the step.
+1. **Project.** Sun Daddy search lists customers (grouped by `customer_name`; a missing name is "No customer"). Open a customer to see that customer's projects, then load one. Quiet alternatives: example data, or an 8,760-hour CSV. If the project has monthly bills but no complete hourly load, Next stays disabled and the step says so, with those same alternatives beside the message. When the export names `load.hourly_source`, a badge says whether the hourly series was measured or estimated from bills. The catalog status and a reload button stay above the step.
 2. **Site and rate.** Customer, project, utility, rate, annual kWh, peak kW, and solar. Data warnings sit in "Things to check". Billed monthly peaks and a simple rate override are collapsed.
 3. **Battery and goal.** Six goal cards (max savings is the default). Optional battery and quantity override. Efficiency, degradation, discount rate, escalator, analysis years, strategy, and max units (1–48, a ceiling on the peak-scaled sweep) sit under "Advanced assumptions".
 4. **Backup.** Optional. Whole building or backup loads (fixed kW or a percent), starting charge, and the optimistic solar credit. Skip leaves the defaults.
 5. **Results.** Recommendation, stat tiles, comparison (click a row to switch; Reset to best returns to the mode's pick), monthly bills, peak-day dispatch, savings versus size, and backup duration. Download a PDF or a CSV of the comparison and the monthly bills.
 
-Going back keeps what you entered. Schedule 6 and interconnection stay in the header, off the wizard. The example rate is still round numbers, not a utility tariff. Sun Daddy search calls the worker routes above. If the export token is missing, the screen says so and the example still runs.
+Going back keeps what you entered. The example rate is still round numbers, not a utility tariff. Sun Daddy search calls the worker routes above. If the export token is missing, the screen says so and the example still runs.
 
-## Schedule 6 worksheet
+## Schedule 6 sizing
 
-The Schedule 6 tab is still the closed-form peak-shave check. It does not run the hourly dispatch. Its time-of-use panel points at the hourly sizer.
+The closed-form peak-shave check still lives in `src/sizing/` and `POST /api/size`. It does not run the hourly dispatch, and it is not a tab in the app.
 
 ### FACT vs RULE_OF_THUMB
 
-Two load qualities. The badge on the result says which one you are in.
+Two load qualities. The snapshot's quality tag says which one you are in.
 
 **FACT** — measured 15-minute kW (a meter file or another measured series).
 
@@ -120,7 +120,7 @@ Schedule 6 applies when the load has **not** registered 1,000 kW more than once 
 
 ## Interconnect
 
-Utah flag logic lives in `src/interconnect/` (`bess-utah-v1.ts`, the JSON schema, and the flag catalog). Rocky Mountain Power’s interim no-export guidance is a **hint**. The export-mode control starts empty. The app will not select non-export for you. Unknown circuit headroom keeps `interconnect_ready` false.
+Utah flag logic lives in `src/interconnect/` (`bess-utah-v1.ts`, the JSON schema, and the flag catalog). It is not a screen in the app. The library does not rewrite an export mode to non-export. Unknown circuit headroom keeps `interconnect_ready` false.
 
 ## Develop
 
@@ -131,7 +131,7 @@ npm run dev
 npm run build
 ```
 
-Load a monthly CSV (`start_date,peak_demand_kw,total_kwh`) or a 15-minute CSV (`ts,kw`). A `sun-daddy.bess-snapshot.v1` JSON file loads the same way. Example A’s snapshot is `src/fixtures/example-a.snapshot.json`.
+`POST /api/size` accepts a `sun-daddy.bess-snapshot.v1` body. Example A’s snapshot is `src/fixtures/example-a.snapshot.json`. The hourly wizard takes an 8,760-hour load, not a monthly bill.
 
 ## Deploy
 
@@ -157,4 +157,4 @@ Sun Daddy auth stays on the worker. `SUN_DADDY_BASE_URL` defaults to `https://co
 npx wrangler secret put SUN_DADDY_EXPORT_TOKEN
 ```
 
-The normalizer reads `schema_version` 1. Economics percents are divided by 100 (`6.0` = 6%). `round_trip_efficiency: null` becomes 0.90. Hourly gaps and monthly-only loads are left empty rather than shaped. Tariffs with tiered energy, percent adders, ambiguous tax, annual true-up, or conflicting delivery and TOU prices return `Could not fully price this tariff.` instead of a guessed rate. Schedule 6 is not the fallback.
+The normalizer reads `schema_version` 1. Economics percents are divided by 100 (`6.0` = 6%). `round_trip_efficiency: null` becomes 0.90. Hourly gaps and monthly-only loads are left empty rather than shaped. A component with `value_type` `flat` and no hour mask is priced on every hour. `tax_rate` of 0 is ignored. A value between 0 and 1 is a fraction (`0.0825` = 8.25%). A value above 1 and at most 100 is a percent (`8.25` = 8.25%). Tariffs with tiered energy, percent adders, an ambiguous tax rate, annual true-up, or conflicting delivery and TOU prices return `Could not fully price this tariff.` instead of a guessed rate. Schedule 6 is not the fallback.

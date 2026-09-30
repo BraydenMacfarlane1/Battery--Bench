@@ -86,22 +86,6 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .brand h1 { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.1; }
 .brand-tag { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 
-.app-tabs { display: flex; flex-wrap: wrap; gap: var(--s1); justify-content: flex-end; }
-.app-tabs button {
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--muted);
-  border-radius: 999px;
-  padding: 8px 14px;
-  font-weight: 650;
-  min-height: 40px;
-}
-.app-tabs button[aria-pressed="true"] {
-  background: var(--navy);
-  color: #f7fbfb;
-}
-.app-tabs .tab-quiet[aria-pressed="false"] { font-weight: 550; }
-
 .wrap { padding-top: var(--s3); padding-bottom: var(--s6); }
 
 .catalog-line {
@@ -294,10 +278,25 @@ label {
 .callout { background: var(--amber-bg); color: #6a4308; }
 .chip {
   margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   background: var(--teal-soft);
   color: var(--teal);
   font-weight: 700;
 }
+.source-badge {
+  display: inline-block;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--navy);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  padding: 2px 8px;
+}
+.callout .quiet-links { margin-top: 8px; }
 .skeleton {
   height: 56px;
   border-radius: 12px;

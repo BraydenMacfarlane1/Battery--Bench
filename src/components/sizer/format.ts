@@ -33,6 +33,24 @@ export function projectCountLabel(count: number): string {
   return count === 1 ? "1 project" : `${formatCount(count)} projects`;
 }
 
+/** Compact spellings that show up in Sun Daddy exports. Anything else is shown as written. */
+const UTILITY_DISPLAY_NAMES: Record<string, string> = {
+  nvenergy: "NV Energy",
+  nve: "NV Energy",
+};
+
+/** "NVenergy" + "NV" becomes "NV Energy (NV)". Unknown names stay as written. */
+export function formatUtilityLabel(utility: string | null | undefined, state?: string | null): string | null {
+  const raw = utility?.trim();
+  if (!raw) return null;
+  const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const name = UTILITY_DISPLAY_NAMES[compact] ?? raw;
+  const region = state?.trim();
+  if (!region) return name;
+  const shown = region.length === 2 ? region.toUpperCase() : region;
+  return `${name} (${shown})`;
+}
+
 export function friendlyToken(value: string | undefined): string | null {
   if (!value) return null;
   const cleaned = value.replace(/[_-]+/g, " ").trim();
@@ -83,4 +101,20 @@ export function peakOf(values: readonly number[]): number {
   let peak = 0;
   for (const value of values) if (value > peak) peak = value;
   return peak;
+}
+
+export function missingHourlyLoadMessage(gap: "monthly" | "incomplete" | null): string | null {
+  if (gap === "monthly") {
+    return "This project only has monthly bill data in Sun Daddy, not hourly usage, so it can't be simulated yet.";
+  }
+  if (gap === "incomplete") {
+    return "This project doesn't have a complete 8,760-hour load in Sun Daddy, so it can't be simulated yet.";
+  }
+  return null;
+}
+
+export function loadSourceBadge(source: "measured" | "estimated" | null | undefined): string | null {
+  if (source === "measured") return "Measured hourly data";
+  if (source === "estimated") return "Estimated from bills";
+  return null;
 }

@@ -27,7 +27,14 @@ export type NormalizedSolarSeries = {
 export type NormalizedRate = {
   rate: RateModel | null;
   warnings: string[];
+  /** Raw utility name from the rate record, before display tidy-up. */
+  utility: string | null;
+  /** State code from the rate record, such as "NV". */
+  state: string | null;
 };
+
+/** How `load.hourly_source` described a complete hourly series. */
+export type LoadHourlySource = "measured" | "estimated";
 
 /** Phase 1 inputs plus the warnings the normalizer refused to guess through. */
 export type NormalizedStudy = {
@@ -37,6 +44,8 @@ export type NormalizedStudy = {
   warnings: string[];
   /** Null when the hourly series is missing or has gaps. */
   load_kwh: number[] | null;
+  /** Null when the export does not name the source of the hourly series. */
+  load_hourly_source: LoadHourlySource | null;
   monthly_kwh: number[] | null;
   /** January–December. Null where the export has no peak. */
   billed_peak_kw: (number | null)[];

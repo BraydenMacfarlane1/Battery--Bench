@@ -3,6 +3,9 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
+import { HOURS_PER_YEAR } from "../src/dispatch/calendar";
+import { normalizeProjectExport } from "../src/sun-daddy/normalize";
+import { flatLgsRate } from "./flat-lgs-fixture";
 
 afterEach(() => {
   cleanup();
@@ -75,9 +78,6 @@ describe("hourly sizer", () => {
     await user.click(screen.getByRole("button", { name: "Step 3: Battery" }));
     await user.click(screen.getByRole("radio", { name: /Backup duration/ }));
     await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
-    expect(screen.getByTestId("active-mode").textContent).toBe("Backup duration");
-    await user.click(screen.getByRole("button", { name: "Schedule 6 worksheet" }));
-    await user.click(screen.getByRole("button", { name: "Hourly sizer" }));
     expect(screen.getByTestId("active-mode").textContent).toBe("Backup duration");
   });
 
@@ -155,6 +155,7 @@ describe("hourly sizer", () => {
               project_name: "Solar + Battery - Carport",
               warnings: [],
               load_kwh: Array.from({ length: 8760 }, () => 10),
+              load_hourly_source: "measured",
               monthly_kwh: null,
               billed_peak_kw: new Array<number | null>(12).fill(null),
               solar_kwh: null,
@@ -187,8 +188,111 @@ describe("hourly sizer", () => {
     await user.click(screen.getByRole("button", { name: /Solar \+ Battery - Carport/ }));
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/api/sun-daddy/project/93"))).toBe(true);
     expect(screen.getByText("Loaded Solar + Battery - Carport.")).toBeTruthy();
+    expect(screen.getByTestId("load-source-badge").textContent).toBe("Measured hourly data");
     await next(user);
     expect(screen.getByTestId("tariff-callout").textContent).toContain("Could not fully price this tariff.");
+  });
+
+  it("shows the rate utility on Site and rate and hides the callout for a flat tariff", async () => {
+    const user = userEvent.setup();
+    const hourly = new Array<number>(HOURS_PER_YEAR).fill(10);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) {
+          return new Response(JSON.stringify({ batteries: [], warnings: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.includes("/api/sun-daddy/projects")) {
+          return new Response(
+            JSON.stringify({
+              projects: [
+                {
+                  id: 15,
+                  name: "Synthetic warehouse",
+                  customer_name: "Synthetic Customer",
+                  utility: "Wrong Power",
+                },
+              ],
+              warnings: [],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/sun-daddy/project/15")) {
+          return new Response(
+            JSON.stringify({
+              normalized: normalizeProjectExport({
+                schema_version: 1,
+                project: { id: 15, name: "Synthetic warehouse" },
+                rates: { pre: { rate: flatLgsRate() } },
+                load: { hourly_kwh: hourly, profiles: [{ pre_rate: flatLgsRate() }] },
+              }),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await user.click(screen.getByRole("button", { name: /Synthetic warehouse/ }));
+    await next(user);
+    expect(screen.getByTestId("site-utility").textContent).toBe("NV Energy (NV)");
+    expect(screen.getByText("LGS-1")).toBeTruthy();
+    expect(screen.queryByTestId("tariff-callout")).toBeNull();
+    expect(screen.queryByText("Not listed")).toBeNull();
+  });
+
+  it("falls back to the project list utility when the rate does not name one", async () => {
+    const user = userEvent.setup();
+    const hourly = new Array<number>(HOURS_PER_YEAR).fill(10);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) {
+          return new Response(JSON.stringify({ batteries: [], warnings: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.includes("/api/sun-daddy/projects")) {
+          return new Response(
+            JSON.stringify({
+              projects: [{ id: 16, name: "Synthetic roof", customer_name: "Synthetic Customer", utility: "NVenergy" }],
+              warnings: [],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/sun-daddy/project/16")) {
+          const normalized = normalizeProjectExport({
+            schema_version: 1,
+            project: { id: 16, name: "Synthetic roof" },
+            rates: { pre: { rate: { name: "LGS-1", fixed_monthly_charge: 10 } } },
+            load: { hourly_kwh: hourly },
+          });
+          return new Response(JSON.stringify({ normalized }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await user.click(screen.getByRole("button", { name: /Synthetic roof/ }));
+    await next(user);
+    expect(screen.getByTestId("site-utility").textContent).toBe("NV Energy");
+    expect(screen.queryByTestId("tariff-callout")).toBeNull();
   });
 
   it("keeps a chosen battery while the ranking mode changes, then resets to the best", async () => {
@@ -453,12 +557,67 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("monthly-bills").textContent).toContain("Jan");
   });
 
-  it("opens the Schedule 6 worksheet from the header", async () => {
+  it("explains why Next stays off when a project only has monthly bills", async () => {
     const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) {
+          return jsonResponse({ batteries: [], warnings: [] });
+        }
+        if (url.includes("/api/sun-daddy/projects")) {
+          return jsonResponse({
+            projects: [{ id: 12, name: "Monthly warehouse", customer_name: "Bill Customer" }],
+            warnings: [],
+          });
+        }
+        if (url.includes("/api/sun-daddy/project/12")) {
+          return jsonResponse({
+            normalized: {
+              schema_version: 1,
+              project_id: "12",
+              project_name: "Monthly warehouse",
+              warnings: [],
+              load_kwh: null,
+              monthly_kwh: new Array<number>(12).fill(1000),
+              billed_peak_kw: new Array<number | null>(12).fill(null),
+              solar_kwh: null,
+              solar_series: [],
+              pre_rate: { rate: null, warnings: [] },
+              post_rates: [],
+              batteries: [],
+              selected_batteries: [],
+              economics: {
+                discount_rate: null,
+                rate_escalator: null,
+                federal_tax_rate: null,
+                state_tax_rate: null,
+                analysis_period: null,
+                system_size_kw: null,
+              },
+            },
+          });
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Schedule 6 worksheet" }));
-    expect(screen.getByTestId("quality").textContent).toBe("RULE_OF_THUMB");
-    expect(screen.getByTestId("gross-demand").textContent).toContain("1,131");
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: /Bill Customer/ }));
+    await user.click(screen.getByRole("button", { name: /Monthly warehouse/ }));
+    const notice = await screen.findByTestId("missing-hourly-load");
+    expect(notice.textContent).toContain(
+      "This project only has monthly bill data in Sun Daddy, not hourly usage, so it can't be simulated yet.",
+    );
+    expect(within(notice).getByRole("button", { name: "Use example data" })).toBeTruthy();
+    expect(within(notice).getByRole("button", { name: "Upload CSVs / enter manually" })).toBeTruthy();
+    expect(screen.queryByTestId("load-source-badge")).toBeNull();
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await user.click(within(notice).getByRole("button", { name: "Use example data" }));
+    expect(screen.queryByTestId("missing-hourly-load")).toBeNull();
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

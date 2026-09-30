@@ -9,8 +9,7 @@ import type { BackupLoadMode, BackupLoadShape } from "../dispatch/backup";
 import { parseHourlyNumbers } from "../dispatch/series-input";
 import { groupProjectsByCustomer } from "../sun-daddy/customers";
 import { normalizeBatteryCatalog, normalizeProjectList } from "../sun-daddy/normalize";
-import type { NormalizedStudy, ProjectListItem } from "../sun-daddy/types";
-import { InterconnectPanel } from "./InterconnectPanel";
+import type { LoadHourlySource, NormalizedStudy, ProjectListItem } from "../sun-daddy/types";
 import { SizerProvider, type StudyMeta, type SizerContextValue } from "./sizer/context";
 import { WizardChrome } from "./sizer/WizardChrome";
 import {
@@ -35,12 +34,12 @@ import {
   type CatalogStatus,
   type ProjectPick,
 } from "./sizer/model";
-import { peakOf, sum } from "./sizer/format";
+import { formatUtilityLabel, loadSourceBadge, missingHourlyLoadMessage, peakOf, sum } from "./sizer/format";
 import { canAdvanceWizard, isWizardStep, type WizardStepId } from "./sizer/wizard";
 
 const example = syntheticExample();
 
-export default function CatalogSizer({ surface }: { surface: "wizard" | "interconnect" }) {
+export default function CatalogSizer() {
   const [step, setStep] = useState<WizardStepId>(1);
   const [maxReached, setMaxReached] = useState<WizardStepId>(1);
   const [source, setSource] = useState<"none" | "example" | "manual" | "sun">("none");
@@ -90,6 +89,8 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
   const [sunMessage, setSunMessage] = useState<string | null>(null);
   const [sunError, setSunError] = useState(false);
   const [loadedNote, setLoadedNote] = useState<string | null>(null);
+  const [sunLoadGap, setSunLoadGap] = useState<"monthly" | "incomplete" | null>(null);
+  const [hourlySource, setHourlySource] = useState<LoadHourlySource | null>(null);
   const [studyWarnings, setStudyWarnings] = useState<string[]>([]);
   const [inputWarnings, setInputWarnings] = useState<string[]>([]);
   const [tariffWarnings, setTariffWarnings] = useState<string[]>([]);
@@ -299,6 +300,8 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
 
   const hasData = loadKwh.length === HOURS_PER_YEAR;
   const canNext = canAdvanceWizard(step, { hasData, modelOk: model.ok });
+  const missingLoadMessage = source === "sun" && !hasData ? missingHourlyLoadMessage(sunLoadGap) : null;
+  const loadBadge = hasData ? loadSourceBadge(hourlySource) : null;
   const groups = useMemo(() => groupProjectsByCustomer(projects), [projects]);
   const rankingBest = selection?.top ?? null;
   const unmetPeak =
@@ -386,8 +389,17 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
   function applyStudy(study: NormalizedStudy, project: ProjectListItem) {
     const tariff = study.pre_rate.warnings;
     const notes = study.warnings.filter((warning) => !tariff.includes(warning));
-    if (study.load_kwh) setLoadKwh(study.load_kwh);
-    else notes.push("This project has no complete 8,760-hour load, so the previous load was kept.");
+    if (study.load_kwh) {
+      setLoadKwh(study.load_kwh);
+      setSunLoadGap(null);
+      setHourlySource(study.load_hourly_source ?? null);
+    } else {
+      setSunLoadGap(study.monthly_kwh && study.monthly_kwh.length > 0 ? "monthly" : "incomplete");
+      setHourlySource(null);
+      if (loadKwh.length === HOURS_PER_YEAR) {
+        notes.push("This project has no complete 8,760-hour load, so the previous load was kept.");
+      }
+    }
     if (study.solar_kwh) setSolarKwh(study.solar_kwh);
     if (study.pre_rate.rate) {
       setRate(study.pre_rate.rate);
@@ -408,10 +420,11 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     const peaks = study.billed_peak_kw.filter((peak) => peak != null);
     if (peaks.length === 12) setBilledText(study.billed_peak_kw.join(", "));
     setSource("sun");
+    const rateUtility = study.pre_rate.utility?.trim() || null;
     setMeta({
       customerName: project.customer_name?.trim() || "No customer",
       projectName: study.project_name ?? project.name,
-      utility: project.utility ?? null,
+      utility: formatUtilityLabel(rateUtility || project.utility, study.pre_rate.state),
     });
     setTariffWarnings(tariff);
     setStudyWarnings(notes);
@@ -434,6 +447,8 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     setSunError(false);
     setMeta({ customerName: "Example customer", projectName: "Synthetic building", utility: null });
     setLoadedNote("Example data is ready.");
+    setSunLoadGap(null);
+    setHourlySource(null);
     setDiscount("6");
     setEscalator("2");
     setAnalysisYears("25");
@@ -451,6 +466,8 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     try {
       setLoadKwh(parseHourlyNumbers(text));
       setSource("manual");
+      setSunLoadGap(null);
+      setHourlySource(null);
       setInputWarnings([]);
       setLoadedNote("Hourly load is ready.");
       setMeta((current) =>
@@ -492,7 +509,6 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
         : "Battery catalog loaded from Sun Daddy.";
   const activeRateName = simpleRate ? "Simple rate (not a utility tariff)" : (rate.name ?? "Rate");
   const value: SizerContextValue = {
-    surface,
     step,
     maxReached,
     canNext,
@@ -506,6 +522,8 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
     sunMessage,
     sunError,
     loadedNote,
+    missingLoadMessage,
+    loadSourceBadge: loadBadge,
     groups,
     openCustomerKey,
     setOpenCustomerKey,
@@ -611,20 +629,7 @@ export default function CatalogSizer({ surface }: { surface: "wizard" | "interco
 
   return (
     <SizerProvider value={value}>
-      {surface === "interconnect" ? (
-        <div className="wrap">
-          <InterconnectPanel
-            usableKwh={selected ? selected.battery.usable_capacity_kwh * selected.quantity : null}
-            dischargeKw={selected ? selected.battery.max_discharge_rate_kw * selected.quantity : null}
-            aggregateKw={selected ? selected.battery.max_discharge_rate_kw * selected.quantity : null}
-            unitKwh={selected ? selected.battery.usable_capacity_kwh : null}
-            unitCount={selected ? selected.quantity : null}
-            customerPeakKw={hasData && peakOf(loadKwh) > 0 ? peakOf(loadKwh) : null}
-          />
-        </div>
-      ) : (
-        <WizardChrome />
-      )}
+      <WizardChrome />
     </SizerProvider>
   );
 }
