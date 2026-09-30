@@ -52,13 +52,19 @@ export {
   constraintMissLabel,
   meetsRankingConstraint,
   MAX_SWEEP_POINTS,
+  OVERRIDE_QUANTITY_CAP,
+  OVERRIDE_QUANTITY_FLOOR,
+  evaluateCandidate,
+  overrideQuantityMax,
+  planContiguousQuantities,
   planSweepQuantities,
   quantitiesForBattery,
+  quantityChoicesForBattery,
   rankCandidates,
   rankingMode,
   sweepBatteries,
 } from "./rank";
-export type { CandidateMetrics, RankContext, RankingMode, SweepInput } from "./rank";
+export type { CandidateEvalInput, CandidateMetrics, RankContext, RankingMode, SweepInput } from "./rank";
 export { decideHour, emptySeries, fleetOf, resolveDegradation, resolveRoundTrip, simulateDispatch } from "./simulate";
 export type { Fleet } from "./simulate";
 export type {

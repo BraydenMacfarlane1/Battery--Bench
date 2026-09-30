@@ -257,6 +257,24 @@ export const MAX_SWEEP_POINTS = 24;
 /** Quantities sampled for one battery before the catalog-wide cap thins the list. */
 const MAX_POINTS_PER_BATTERY = 6;
 
+/** The override menu lists at least this many quantities, even when one unit covers the peak. */
+export const OVERRIDE_QUANTITY_FLOOR = 10;
+
+/** Hard cap on the override menu. */
+export const OVERRIDE_QUANTITY_CAP = 100;
+
+/** Stack should cover about this multiple of site peak kW and of the peak hour's kWh. */
+const OVERRIDE_PEAK_COVER = 1.5;
+
+/** Leading batteries that may get every integer in their sampled span added to the comparison. */
+export const CONTIGUOUS_TOP_BATTERIES = 3;
+
+/**
+ * Extra simulations allowed when filling those spans.
+ * A battery with more holes than the remaining budget stays sampled.
+ */
+export const CONTIGUOUS_EXTRA_BUDGET = 8;
+
 /** A unit whose discharge is at least this multiple of site peak is swept at quantity 1. */
 const OVERSIZED_POWER_RATIO = 1.5;
 
@@ -329,6 +347,41 @@ function integersThrough(max: number): number[] {
   return quantities;
 }
 
+/**
+ * Largest quantity the override menu offers for one battery.
+ * Enough units to cover about 1.5× the site peak kW and the peak hour's kWh,
+ * at least {@link OVERRIDE_QUANTITY_FLOOR}, and never above {@link OVERRIDE_QUANTITY_CAP}.
+ */
+export function overrideQuantityMax(battery: Battery, peakKw: number): number {
+  const peak = Number.isFinite(peakKw) && peakKw > 0 ? peakKw : 0;
+  const unitKw = battery.max_discharge_rate_kw;
+  const unitKwh = battery.usable_capacity_kwh;
+  let needed = OVERRIDE_QUANTITY_FLOOR;
+  if (peak > 0 && unitKw > 0 && unitKwh > 0) {
+    const coverKw = Math.ceil((peak * OVERRIDE_PEAK_COVER) / unitKw);
+    const coverKwh = Math.ceil((peak * OVERRIDE_PEAK_COVER) / unitKwh);
+    needed = Math.max(needed, coverKw, coverKwh);
+  }
+  return Math.min(OVERRIDE_QUANTITY_CAP, Math.max(1, needed));
+}
+
+/**
+ * Every integer from 1 through the peak-scaled menu max.
+ * Values in `also` raise that max (still capped) so a swept or selected quantity stays listed.
+ */
+export function quantityChoicesForBattery(
+  battery: Battery,
+  peakKw: number,
+  also: readonly number[] = [],
+): number[] {
+  let max = overrideQuantityMax(battery, peakKw);
+  for (const quantity of also) {
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > OVERRIDE_QUANTITY_CAP) continue;
+    if (quantity > max) max = quantity;
+  }
+  return integersThrough(max);
+}
+
 function sampleQuantities(hi: number, points: number): number[] {
   const count = Math.max(1, Math.min(points, hi));
   if (count === 1) return [1];
@@ -380,6 +433,104 @@ function removablePoints(list: readonly number[], pinned: ReadonlySet<number>): 
   return list.filter((quantity) => quantity !== 1 && quantity !== highest && !pinned.has(quantity));
 }
 
+export type CandidateEvalInput = {
+  load_kwh: readonly number[];
+  solar_kwh?: readonly number[];
+  rate: RateModel;
+  battery: Battery;
+  quantity: number;
+  strategy: DispatchStrategy;
+  soc_min?: number;
+  soc_max?: number;
+  billed_peak_kw?: readonly (number | null)[];
+  start_weekday?: number;
+  discount_rate?: number;
+  rate_escalator?: number;
+  analysis_years?: number;
+  /** Null when backup hours were not requested. */
+  backup: BackupScenario | null;
+};
+
+/** One stack: the same metrics the catalog sweep stores for a sampled quantity. */
+export function evaluateCandidate(input: CandidateEvalInput): CandidateMetrics {
+  if (!Number.isInteger(input.quantity) || input.quantity < 1) {
+    throw new Error("quantity must be an integer of 1 or more.");
+  }
+  const discountRate = input.discount_rate ?? DEFAULT_DISCOUNT_RATE;
+  const escalator = input.rate_escalator ?? DEFAULT_RATE_ESCALATOR;
+  const years = input.analysis_years ?? DEFAULT_ANALYSIS_YEARS;
+  if (!(discountRate > -1)) throw new Error("discount rate must be greater than -100%.");
+  const socMin = input.soc_min ?? 0;
+  const socMax = input.soc_max ?? 1;
+  const simulation = simulateDispatch({
+    load_kwh: input.load_kwh,
+    solar_kwh: input.solar_kwh,
+    rate: input.rate,
+    battery: input.battery,
+    quantity: input.quantity,
+    strategy: input.strategy,
+    soc_min: socMin,
+    soc_max: socMax,
+    billed_peak_kw: input.billed_peak_kw,
+    start_weekday: input.start_weekday,
+    include_hourly: false,
+  });
+  const backup = input.backup
+    ? estimateBackup({
+        load_kwh: input.load_kwh,
+        solar_kwh: input.solar_kwh,
+        battery: input.battery,
+        quantity: input.quantity,
+        soc_min: socMin,
+        soc_max: socMax,
+        ...input.backup,
+      })
+    : null;
+  return metricsFromSimulation({
+    battery: input.battery,
+    quantity: input.quantity,
+    strategy: input.strategy,
+    simulation,
+    discountRate,
+    escalator,
+    years,
+    backup,
+  });
+}
+
+/**
+ * Missing integers from 1 through the highest sampled quantity, for the top few batteries,
+ * when each battery's whole span fits in {@link CONTIGUOUS_EXTRA_BUDGET}.
+ * A span that is not cheap is left sampled; a cheaper neighbor can still fill.
+ */
+export function planContiguousQuantities(ranked: readonly CandidateMetrics[]): { battery: Battery; quantities: number[] }[] {
+  const ids: string[] = [];
+  for (const row of ranked) {
+    if (ids.includes(row.battery.id)) continue;
+    ids.push(row.battery.id);
+    if (ids.length >= CONTIGUOUS_TOP_BATTERIES) break;
+  }
+  const plans: { battery: Battery; quantities: number[] }[] = [];
+  let used = 0;
+  for (const id of ids) {
+    const group = ranked.filter((row) => row.battery.id === id);
+    const battery = group[0]?.battery;
+    if (!battery) continue;
+    const have = new Set(group.map((row) => row.quantity));
+    let hi = 0;
+    for (const quantity of have) if (quantity > hi) hi = quantity;
+    const gaps: number[] = [];
+    for (let quantity = 1; quantity <= hi; quantity += 1) {
+      if (!have.has(quantity)) gaps.push(quantity);
+    }
+    if (gaps.length === 0) continue;
+    if (used + gaps.length > CONTIGUOUS_EXTRA_BUDGET) continue;
+    used += gaps.length;
+    plans.push({ battery, quantities: gaps });
+  }
+  return plans;
+}
+
 export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
   if (!Number.isInteger(input.max_quantity) || input.max_quantity < 1) {
     throw new Error("max_quantity must be an integer of 1 or more.");
@@ -401,40 +552,22 @@ export function sweepBatteries(input: SweepInput): CandidateMetrics[] {
   const ranked: CandidateMetrics[] = [];
   input.batteries.forEach((battery, index) => {
     for (const quantity of plans[index] ?? [1]) {
-      const simulation = simulateDispatch({
-        load_kwh: input.load_kwh,
-        solar_kwh: input.solar_kwh,
-        rate: input.rate,
-        battery,
-        quantity,
-        strategy: input.strategy,
-        soc_min: socMin,
-        soc_max: socMax,
-        billed_peak_kw: input.billed_peak_kw,
-        start_weekday: input.start_weekday,
-        include_hourly: false,
-      });
-      const backup = scenario
-        ? estimateBackup({
-            load_kwh: input.load_kwh,
-            solar_kwh: input.solar_kwh,
-            battery,
-            quantity,
-            soc_min: socMin,
-            soc_max: socMax,
-            ...scenario,
-          })
-        : null;
       ranked.push(
-        metricsFromSimulation({
+        evaluateCandidate({
+          load_kwh: input.load_kwh,
+          solar_kwh: input.solar_kwh,
+          rate: input.rate,
           battery,
           quantity,
           strategy: input.strategy,
-          simulation,
-          discountRate,
-          escalator,
-          years,
-          backup,
+          soc_min: socMin,
+          soc_max: socMax,
+          billed_peak_kw: input.billed_peak_kw,
+          start_weekday: input.start_weekday,
+          discount_rate: discountRate,
+          rate_escalator: escalator,
+          analysis_years: years,
+          backup: scenario,
         }),
       );
     }

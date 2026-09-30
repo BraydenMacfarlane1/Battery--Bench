@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HOURS_PER_YEAR } from "../dispatch/calendar";
 import { BACKUP_DURATION, CHEAPEST_PEAK_TARGET, RANKING_MODES, bestQuantityForBattery } from "../dispatch/rank";
+import type { CandidateMetrics } from "../dispatch/rank";
 import { simulateDispatch } from "../dispatch/simulate";
 import { syntheticBatteries, syntheticExample } from "../dispatch/synthetic-example";
 import type { DispatchStrategy, RateModel } from "../dispatch/types";
@@ -13,8 +14,13 @@ import { SizerProvider, type StudyMeta, type SizerContextValue } from "./sizer/c
 import { WizardChrome } from "./sizer/WizardChrome";
 import {
   PLACEHOLDER_NOTICE,
+  allowedQuantities,
+  cachedCandidate,
   catalogSourceLabel,
   chooseQuantityForBattery,
+  comparisonRows,
+  evaluateQuantity,
+  findQuantity,
   includeQuantities,
   missingPickNote,
   rankSweep,
@@ -167,8 +173,31 @@ export default function CatalogSizer() {
     return rankSweep(sweep, modeId, peakTarget, backupHours);
   }, [sweep, modeId, peakTarget, backupHours]);
 
-  const selection = model.ok ? resolveSelection(model.ranked, override) : null;
-  const chartSeries = model.ok ? seriesByBattery(model.swept) : [];
+  const quantityCache = useRef(new Map<string, CandidateMetrics>());
+  const cacheSweep = useRef(sweep);
+  if (cacheSweep.current !== sweep) {
+    cacheSweep.current = sweep;
+    quantityCache.current = new Map();
+  }
+
+  const onDemand = useMemo(() => {
+    if (!model.ok || !override) return null;
+    if (findQuantity(model.ranked, override.batteryId, override.quantity)) return null;
+    const battery = model.swept.find((row) => row.battery.id === override.batteryId)?.battery;
+    if (!battery) return null;
+    const allowed = allowedQuantities(battery, peakOf(loadKwh), model.ranked);
+    if (!allowed.includes(override.quantity)) return null;
+    return cachedCandidate(quantityCache.current, battery.id, override.quantity, () =>
+      evaluateQuantity(model.sim, battery, override.quantity),
+    );
+  }, [model, override, loadKwh]);
+
+  const selection = model.ok ? resolveSelection(model.ranked, override, onDemand) : null;
+  const comparison = useMemo(
+    () => (model.ok ? comparisonRows(model.ranked, onDemand ? [onDemand] : [], model.mode, model.ctx) : []),
+    [model, onDemand],
+  );
+  const chartSeries = model.ok ? seriesByBattery(onDemand ? [...model.swept, onDemand] : model.swept) : [];
   const selected = selection?.selected ?? null;
 
   const detail = useMemo(() => {
@@ -218,9 +247,14 @@ export default function CatalogSizer() {
   useEffect(() => {
     if (!override || !model.ok) return;
     if (appliedPickEpoch.current !== pickEpoch) return;
-    const alive = model.ranked.some((row) => row.battery.id === override.batteryId && row.quantity === override.quantity);
-    if (!alive) setOverride(null);
-  }, [model, override, pickEpoch]);
+    const battery = model.swept.find((row) => row.battery.id === override.batteryId)?.battery;
+    if (!battery) {
+      setOverride(null);
+      return;
+    }
+    const allowed = allowedQuantities(battery, peakOf(loadKwh), model.ranked);
+    if (!allowed.includes(override.quantity)) setOverride(null);
+  }, [model, override, pickEpoch, loadKwh]);
 
   async function loadCatalog() {
     const requestId = catalogRequest.current + 1;
@@ -578,6 +612,7 @@ export default function CatalogSizer() {
     outageSolar,
     setOutageSolar,
     model,
+    comparison,
     selection,
     detail,
     chartSeries,

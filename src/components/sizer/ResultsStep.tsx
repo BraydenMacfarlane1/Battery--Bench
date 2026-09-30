@@ -100,6 +100,8 @@ export function ResultsStep() {
       <BatteryOverride
         ranked={sizer.model.ranked}
         swept={sizer.model.swept}
+        known={sizer.comparison}
+        peakKw={sizer.peakKw}
         mode={mode}
         ctx={sizer.rankContext}
         selected={selected}
@@ -131,7 +133,7 @@ export function ResultsStep() {
             </tr>
           </thead>
           <tbody>
-            {sizer.model.ranked.map((row) => {
+            {sizer.comparison.map((row) => {
               const isPicked = row.battery.id === selected.battery.id && row.quantity === selected.quantity;
               return (
                 <tr
@@ -228,7 +230,7 @@ function buildReport(
         },
       ]
     : [];
-  const ranked = sizer.model.ok ? sizer.model.ranked : [];
+  const ranked = sizer.comparison;
   return {
     generatedAt: new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }),
     customerName: sizer.meta.customerName,

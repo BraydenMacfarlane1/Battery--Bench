@@ -9,6 +9,9 @@ import {
   batteryMissesConstraint,
   bestQuantityForBattery,
   constraintMissLabel,
+  evaluateCandidate,
+  planContiguousQuantities,
+  quantityChoicesForBattery,
   rankCandidates,
   rankingMode,
   sweepBatteries,
@@ -93,6 +96,9 @@ export type SimContext = {
   soc_max: number;
   billed_peak_kw?: (number | null)[];
   backup: BackupScenario;
+  discount_rate: number;
+  rate_escalator: number;
+  analysis_years: number;
 };
 
 export type SweepSuccess = {
@@ -239,6 +245,9 @@ export function runSweep(form: SweepForm): SweepSuccess | SweepFailure {
         soc_max: max,
         billed_peak_kw: billed ?? undefined,
         backup,
+        discount_rate: discountRate,
+        rate_escalator: rateEscalator,
+        analysis_years: yearsCount,
       },
     };
   } catch (error) {
@@ -253,7 +262,14 @@ export function rankSweep(sweep: SweepSuccess, modeId: string, peakTarget: strin
       target_peak_reduction_kw: Number(peakTarget),
       backup_target_hours: Number(backupHours),
     };
-    const ranked = rankCandidates(sweep.swept, mode, ctx);
+    const base = rankCandidates(sweep.swept, mode, ctx);
+    const filled: CandidateMetrics[] = [];
+    for (const plan of planContiguousQuantities(base)) {
+      for (const quantity of plan.quantities) {
+        filled.push(evaluateQuantity(sweep.sim, plan.battery, quantity));
+      }
+    }
+    const ranked = filled.length > 0 ? rankCandidates([...base, ...filled], mode, ctx) : base;
     return { ok: true, ranked, swept: sweep.swept, mode, ctx, sim: sweep.sim };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Could not rank these batteries." };
@@ -263,13 +279,86 @@ export function rankSweep(sweep: SweepSuccess, modeId: string, peakTarget: strin
 export function resolveSelection(
   ranked: readonly CandidateMetrics[],
   override: { batteryId: string; quantity: number } | null,
+  extra?: CandidateMetrics | null,
 ): { top: CandidateMetrics; selected: CandidateMetrics; pinned: boolean } | null {
   const top = ranked[0];
   if (!top) return null;
-  const match = override
-    ? ranked.find((row) => row.battery.id === override.batteryId && row.quantity === override.quantity)
-    : undefined;
+  const match = override ? findQuantity(ranked, override.batteryId, override.quantity) ?? matchingExtra(extra, override) : undefined;
   return { top, selected: match ?? top, pinned: match != null };
+}
+
+function matchingExtra(
+  extra: CandidateMetrics | null | undefined,
+  override: { batteryId: string; quantity: number },
+): CandidateMetrics | undefined {
+  if (!extra) return undefined;
+  if (extra.battery.id !== override.batteryId || extra.quantity !== override.quantity) return undefined;
+  return extra;
+}
+
+export function findQuantity(
+  rows: readonly CandidateMetrics[],
+  batteryId: string,
+  quantity: number,
+): CandidateMetrics | undefined {
+  return rows.find((row) => row.battery.id === batteryId && row.quantity === quantity);
+}
+
+/** Ranked comparison, plus any on-demand quantity the sweep did not sample. */
+export function comparisonRows(
+  ranked: readonly CandidateMetrics[],
+  extras: readonly CandidateMetrics[],
+  mode: RankingMode,
+  ctx: RankContext,
+): CandidateMetrics[] {
+  const seen = new Set<string>();
+  const merged: CandidateMetrics[] = [];
+  for (const row of [...ranked, ...extras]) {
+    const key = `${row.battery.id}:${row.quantity}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+  return rankCandidates(merged, mode, ctx);
+}
+
+/** Simulate one quantity with the same inputs as the catalog sweep. */
+export function evaluateQuantity(sim: SimContext, battery: Battery, quantity: number): CandidateMetrics {
+  return evaluateCandidate({
+    load_kwh: sim.load_kwh,
+    solar_kwh: sim.solar_kwh,
+    rate: sim.rate,
+    battery,
+    quantity,
+    strategy: sim.strategy,
+    soc_min: sim.soc_min,
+    soc_max: sim.soc_max,
+    billed_peak_kw: sim.billed_peak_kw,
+    discount_rate: sim.discount_rate,
+    rate_escalator: sim.rate_escalator,
+    analysis_years: sim.analysis_years,
+    backup: sim.backup,
+  });
+}
+
+/** Remember a simulated quantity so picking it again does not dispatch the year a second time. */
+export function cachedCandidate(
+  cache: Map<string, CandidateMetrics>,
+  batteryId: string,
+  quantity: number,
+  compute: () => CandidateMetrics,
+): CandidateMetrics {
+  const key = `${batteryId}:${quantity}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const row = compute();
+  cache.set(key, row);
+  return row;
+}
+
+export function allowedQuantities(battery: Battery, peakKw: number, rows: readonly CandidateMetrics[]): number[] {
+  const also = rows.filter((row) => row.battery.id === battery.id).map((row) => row.quantity);
+  return quantityChoicesForBattery(battery, peakKw, also);
 }
 
 export function uniqueBatteries(rows: readonly CandidateMetrics[]): Battery[] {

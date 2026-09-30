@@ -488,6 +488,75 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("comparison-table").textContent).toContain("Synthetic sixty");
   });
 
+  it("lets the override pick quantities 3 and 6 when the sweep skipped them", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) {
+          return jsonResponse({
+            batteries: [
+              {
+                id: "skip",
+                name: "Skip Sample",
+                usable_capacity_kwh: 10,
+                max_charge_rate_kw: 5,
+                max_discharge_rate_kw: 5,
+                cost_per_unit: 10000,
+                cost_per_additional_unit: 7000,
+                round_trip_efficiency: 0.9,
+              },
+            ],
+            warnings: [],
+          });
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (1 battery)");
+    });
+    await goToResults(user);
+
+    const sampled = quantityCells("Skip Sample");
+    expect(sampled).not.toContain("3");
+    expect(sampled).not.toContain("6");
+    expect(sampled.length).toBeGreaterThan(1);
+
+    const quantity = screen.getByLabelText("Quantity") as HTMLSelectElement;
+    const choices = [...quantity.options].map((option) => Number(option.value));
+    expect(choices).toContain(3);
+    expect(choices).toContain(6);
+    expect(choices).toEqual(Array.from({ length: choices.length }, (_, index) => index + 1));
+    expect(choices.length).toBeGreaterThanOrEqual(10);
+    expect(choices.length).toBeLessThanOrEqual(100);
+
+    await user.selectOptions(quantity, "3");
+    expect(screen.getByTestId("selection-title").textContent).toBe("3 × Skip Sample");
+    expect(screen.getByTestId("top-pick").textContent).toContain("$24,000");
+    expect(screen.getByTestId("monthly-bills")).toBeTruthy();
+    const pickedThree = document.querySelector("tr.is-selected");
+    expect(pickedThree?.textContent).toContain("Skip Sample");
+    const threeCells = within(pickedThree as HTMLElement).getAllByRole("cell");
+    expect(threeCells[1]?.textContent).toBe("3");
+    expect(quantityCells("Skip Sample")).toContain("3");
+
+    await user.selectOptions(screen.getByLabelText("Quantity"), "6");
+    expect(screen.getByTestId("selection-title").textContent).toBe("6 × Skip Sample");
+    expect(screen.getByTestId("top-pick").textContent).toContain("$45,000");
+    const pickedSix = document.querySelector("tr.is-selected");
+    const sixCells = within(pickedSix as HTMLElement).getAllByRole("cell");
+    expect(sixCells[0]?.textContent).toBe("Skip Sample");
+    expect(sixCells[1]?.textContent).toBe("6");
+
+    await user.selectOptions(screen.getByLabelText("Quantity"), "3");
+    expect(screen.getByTestId("selection-title").textContent).toBe("3 × Skip Sample");
+    expect(screen.getByTestId("top-pick").textContent).toContain("$24,000");
+    expect(screen.getByTestId("monthly-bills").textContent).toContain("Jan");
+  });
+
   it("explains why Next stays off when a project only has monthly bills", async () => {
     const user = userEvent.setup();
     vi.stubGlobal(
@@ -551,6 +620,17 @@ describe("hourly sizer", () => {
     expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+function quantityCells(name: string): string[] {
+  const table = screen.getByTestId("comparison-table");
+  return within(table)
+    .getAllByRole("row")
+    .slice(1)
+    .flatMap((row) => {
+      const cells = within(row).getAllByRole("cell");
+      return cells[0]?.textContent === name ? [cells[1]?.textContent ?? ""] : [];
+    });
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
