@@ -113,7 +113,26 @@ export function normalizeProjectList(body: unknown): { projects: ProjectListItem
       warnings.push(skippedIdWarning(rawId, "project list entry"));
       continue;
     }
-    projects.push({ id, name });
+    const project: ProjectListItem = { id, name };
+    const customerId = readId(record.customer_id);
+    const customerName = readString(record.customer_name);
+    const label = readString(record.label);
+    const projectType = readString(record.project_type) ?? readString(record.type);
+    const status = readString(record.status);
+    const siteAddress = readString(record.site_address);
+    const utility = readString(record.utility) ?? readString(record.utility_name);
+    const updatedAt = readString(record.updated_at);
+    const systemSize = readOptionalNumber(record.system_size_kw ?? record.system_size);
+    if (customerId) project.customer_id = customerId;
+    if (customerName) project.customer_name = customerName;
+    if (label) project.label = label;
+    if (projectType) project.project_type = projectType;
+    if (status) project.status = status;
+    if (siteAddress) project.site_address = siteAddress;
+    if (utility) project.utility = utility;
+    if (updatedAt) project.updated_at = updatedAt;
+    if (systemSize != null) project.system_size_kw = systemSize;
+    projects.push(project);
   }
   if (list.length > 0 && projects.length === 0 && warnings.length === 0) {
     warnings.push("The Sun Daddy project list had entries, but none included a string or number id.");
@@ -929,6 +948,15 @@ function readString(value: unknown): string | null {
 
 function readFinite(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readOptionalNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

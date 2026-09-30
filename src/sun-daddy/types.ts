@@ -54,6 +54,18 @@ export type NormalizedStudy = {
 export type ProjectListItem = {
   id: string;
   name: string;
+  /** Present when the export included a string or number customer id. */
+  customer_id?: string;
+  /** Present when the export included a customer name. Missing names group as "No customer". */
+  customer_name?: string;
+  label?: string;
+  project_type?: string;
+  status?: string;
+  site_address?: string;
+  utility?: string;
+  updated_at?: string;
+  /** kW, when the list entry includes a system size. */
+  system_size_kw?: number;
 };
 
 export const TARIFF_INCOMPLETE = "Could not fully price this tariff.";

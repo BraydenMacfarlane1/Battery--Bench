@@ -9,12 +9,47 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+async function useExample(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Use example data" }));
+}
+
+async function next(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Next" }));
+}
+
+async function goToResults(user: ReturnType<typeof userEvent.setup>) {
+  await useExample(user);
+  await next(user);
+  await next(user);
+  await next(user);
+  await next(user);
+}
+
 describe("hourly sizer", () => {
-  it("ranks the synthetic example without Sun Daddy", () => {
+  it("does not advance until a study is loaded, then ranks the synthetic example", async () => {
+    const user = userEvent.setup();
     render(<App />);
     expect(screen.getByRole("heading", { name: "Battery Bench" })).toBeTruthy();
+    expect(screen.getByText("Step 1 of 5")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await useExample(user);
+    expect(screen.getByText("Example data is ready.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(false);
+    screen.getByRole("button", { name: "Next" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("wizard-step").getAttribute("data-step")).toBe("2");
     expect(screen.getByTestId("example-note").textContent).toContain("Synthetic example rate");
     expect(screen.getByTestId("example-note").textContent).toContain("8,760 load hours");
+
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByTestId("wizard-step").getAttribute("data-step")).toBe("1");
+    expect(screen.getByText("Example data is ready.")).toBeTruthy();
+
+    await next(user);
+    await next(user);
+    await next(user);
+    await next(user);
     expect(screen.getByTestId("active-mode").textContent).toBe("Max annual savings");
     const top = screen.getByTestId("top-pick");
     expect(top.textContent).toMatch(/\d+ × /);
@@ -24,15 +59,22 @@ describe("hourly sizer", () => {
     expect(within(table).getAllByRole("row").length).toBeGreaterThan(3);
     expect(screen.getByTestId("sizer-caveat").textContent).toMatch(/billed|hourly/i);
     expect(screen.getAllByText(/not an engineering stamp/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Download PDF report" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Download CSV" })).toBeTruthy();
   });
 
   it("switches ranking mode without dropping the comparison", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("tab", { name: "Best payback / ROI" }));
+    await goToResults(user);
+    await user.click(screen.getByRole("button", { name: "Step 3: Battery" }));
+    await user.click(screen.getByRole("radio", { name: /Best payback \/ ROI/ }));
+    await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
     expect(screen.getByTestId("active-mode").textContent).toBe("Best payback / ROI");
     expect(screen.getByTestId("top-pick").textContent).toContain("Best payback / ROI");
-    await user.click(screen.getByRole("tab", { name: "Backup duration" }));
+    await user.click(screen.getByRole("button", { name: "Step 3: Battery" }));
+    await user.click(screen.getByRole("radio", { name: /Backup duration/ }));
+    await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
     expect(screen.getByTestId("active-mode").textContent).toBe("Backup duration");
     await user.click(screen.getByRole("button", { name: "Schedule 6 worksheet" }));
     await user.click(screen.getByRole("button", { name: "Hourly sizer" }));
@@ -42,10 +84,14 @@ describe("hourly sizer", () => {
   it("rejects a short pasted load and keeps the example ranking", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await goToResults(user);
     const before = screen.getByTestId("top-pick").textContent;
+    await user.click(screen.getByRole("button", { name: "Step 1: Project" }));
+    await user.click(screen.getByRole("button", { name: "Upload CSVs / enter manually" }));
     await user.type(screen.getByLabelText("Load kWh, 8,760 values"), "1, 2, 3");
     await user.click(screen.getByRole("button", { name: "Use pasted load" }));
     expect(screen.getByRole("alert").textContent).toContain("8,760");
+    await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
     expect(screen.getByTestId("top-pick").textContent).toBe(before);
   });
 
@@ -54,26 +100,47 @@ describe("hourly sizer", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        new Response(JSON.stringify({ error: "Sun Daddy export is not configured. Set the SUN_DADDY_EXPORT_TOKEN secret on the worker." }), {
-          status: 503,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify({
+            error: "Sun Daddy export is not configured. Set the SUN_DADDY_EXPORT_TOKEN secret on the worker.",
+          }),
+          { status: 503, headers: { "content-type": "application/json" } },
+        ),
       ),
     );
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
     expect(screen.getByText(/SUN_DADDY_EXPORT_TOKEN/)).toBeTruthy();
+    await goToResults(user);
     expect(screen.getByTestId("top-pick")).toBeTruthy();
   });
 
-  it("opens a project when the list id is numeric", async () => {
+  it("opens a customer, then a project, when the list id is numeric", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/api/sun-daddy/batteries")) {
+        return new Response(JSON.stringify({ batteries: [], warnings: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (url.includes("/api/sun-daddy/projects")) {
         return new Response(
           JSON.stringify({
-            projects: [{ id: 93, name: "Solar + Battery - Carport", customer_id: 80, pre_rate_id: null }],
+            projects: [
+              {
+                id: 93,
+                name: "Solar + Battery - Carport",
+                customer_id: 80,
+                customer_name: "Synthetic Customer",
+                project_type: "solar_battery",
+                status: "active",
+                updated_at: "2026-04-02",
+                system_size_kw: 120,
+              },
+              { id: 94, name: "Orphan roof" },
+            ],
             warnings: [],
           }),
           { status: 200, headers: { "content-type": "application/json" } },
@@ -87,12 +154,12 @@ describe("hourly sizer", () => {
               project_id: "93",
               project_name: "Solar + Battery - Carport",
               warnings: [],
-              load_kwh: null,
+              load_kwh: Array.from({ length: 8760 }, () => 10),
               monthly_kwh: null,
               billed_peak_kw: new Array<number | null>(12).fill(null),
               solar_kwh: null,
               solar_series: [],
-              pre_rate: { rate: null, warnings: [] },
+              pre_rate: { rate: null, warnings: ["Could not fully price this tariff."] },
               post_rates: [],
               batteries: [],
               economics: {
@@ -113,14 +180,29 @@ describe("hourly sizer", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    await user.click(screen.getByRole("button", { name: "Solar + Battery - Carport" }));
+    expect(screen.getByRole("button", { name: /Synthetic Customer/ }).textContent).toContain("1 project");
+    expect(screen.getByRole("button", { name: /No customer/ }).textContent).toContain("1 project");
+    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    expect(screen.getByRole("button", { name: /Solar \+ Battery - Carport/ }).textContent).toContain("120 kW");
+    await user.click(screen.getByRole("button", { name: /Solar \+ Battery - Carport/ }));
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/api/sun-daddy/project/93"))).toBe(true);
     expect(screen.getByText("Loaded Solar + Battery - Carport.")).toBeTruthy();
+    await next(user);
+    expect(screen.getByTestId("tariff-callout").textContent).toContain("Could not fully price this tariff.");
   });
 
   it("keeps a chosen battery while the ranking mode changes, then resets to the best", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await useExample(user);
+    await next(user);
+    await next(user);
+    await next(user);
+    expect((screen.getByLabelText("Percent of building load") as HTMLInputElement).value).toBe("30");
+    expect(screen.getByRole("button", { name: "Backup loads" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Percent of load" }).getAttribute("aria-pressed")).toBe("true");
+    await next(user);
+
     expect(screen.getByTestId("selection-badge").textContent).toBe("Best for Max annual savings");
     expect(screen.getByTestId("backup-headline").textContent).toMatch(/^About \d+\.\d hours \(conservative \d+\.\d hours\)$/);
     const headline = screen.getByTestId("backup-headline").textContent ?? "";
@@ -129,9 +211,6 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("monthly-bills").textContent).toContain("Jan");
     expect(screen.getByTestId("dispatch-view").textContent).toMatch(/peak-load day/i);
     expect(screen.getByTestId("backup-column")).toBeTruthy();
-    expect((screen.getByLabelText("Percent of building load") as HTMLInputElement).value).toBe("30");
-    expect(screen.getByRole("button", { name: "Backup loads" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "Percent of load" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText(/Hourly resolution only/)).toBeTruthy();
     expect(screen.getByText(/Surge and motor-start loads are ignored/)).toBeTruthy();
     expect(screen.getByText(/islanding-capable/)).toBeTruthy();
@@ -145,7 +224,9 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("comparison-table").textContent).toContain("Small cabinet");
     expect(screen.getByTestId("comparison-table").textContent).toContain("Large cabinet");
 
-    await user.click(screen.getByRole("tab", { name: "Best payback / ROI" }));
+    await user.click(screen.getByRole("button", { name: "Step 3: Battery" }));
+    await user.click(screen.getByRole("radio", { name: /Best payback \/ ROI/ }));
+    await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
     expect(screen.getByTestId("active-mode").textContent).toBe("Best payback / ROI");
     expect(screen.getByTestId("selection-title").textContent).toContain(pickName);
     expect(within(screen.getByTestId("comparison-table")).getAllByRole("row").length).toBeGreaterThan(3);
@@ -158,10 +239,15 @@ describe("hourly sizer", () => {
   it("lets a battery that misses the peak target stay selected", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("tab", { name: "Cheapest peak-kW reduction" }));
+    await useExample(user);
+    await next(user);
+    await next(user);
+    await user.click(screen.getByRole("radio", { name: /Cheapest peak-kW reduction/ }));
     const target = screen.getByLabelText("Peak reduction target (kW)");
     await user.clear(target);
     await user.type(target, "9999");
+    await next(user);
+    await next(user);
     const batterySelect = screen.getByLabelText("Battery");
     expect(within(batterySelect).getByRole("option", { name: /Small cabinet/ }).textContent).toMatch(/misses ranking constraint/i);
     await user.selectOptions(batterySelect, "small");
@@ -174,11 +260,18 @@ describe("hourly sizer", () => {
   it("switches backup to the whole building and still estimates a duration", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await useExample(user);
+    await next(user);
+    await next(user);
+    await next(user);
     await user.click(screen.getByRole("button", { name: "Whole building" }));
     expect(screen.getByRole("button", { name: "Whole building" }).getAttribute("aria-pressed")).toBe("true");
+    await user.click(screen.getByRole("button", { name: "Step 3: Battery" }));
+    await user.click(screen.getByRole("radio", { name: /Backup duration/ }));
+    await next(user);
+    await next(user);
     expect(screen.getByTestId("backup-headline").textContent).toMatch(/About \d+\.\d hours \(conservative \d+\.\d hours\)/);
     expect(screen.getByTestId("backup-result").textContent).toMatch(/Whole building load/);
-    await user.click(screen.getByRole("tab", { name: "Backup duration" }));
     expect(screen.getByTestId("comparison-table").textContent).toMatch(/\d+\.\d h/);
   });
 
@@ -191,27 +284,38 @@ describe("hourly sizer", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    expect((await screen.findByTestId("catalog-source")).textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    await waitFor(() => {
+      expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    });
     expect(screen.queryByTestId("catalog-placeholder")).toBeNull();
+    await useExample(user);
+    await next(user);
+    await next(user);
+    await next(user);
+    await next(user);
+    const battery = screen.getByLabelText("Battery");
     for (const name of ["Synthetic forty", "Synthetic sixty", "Synthetic block"]) {
-      expect(screen.getByLabelText(`${name} name`)).toBeTruthy();
       expect(screen.getByTestId("comparison-table").textContent).toContain(name);
-      expect(within(screen.getByLabelText("Battery")).getByRole("option", { name })).toBeTruthy();
+      expect(within(battery).getByRole("option", { name })).toBeTruthy();
     }
-    expect(screen.queryByLabelText("Example Small cabinet name")).toBeNull();
+    expect(screen.queryByRole("option", { name: /Example Small cabinet/ })).toBeNull();
     const callsBeforeReload = fetchMock.mock.calls.length;
     await user.click(screen.getByRole("button", { name: "Reload catalog" }));
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeReload));
     expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
 
     const before = screen.getByTestId("top-pick").textContent;
+    await user.click(screen.getByRole("button", { name: "Step 3: Battery" }));
+    await user.click(screen.getByText("Advanced assumptions"));
     const efficiency = screen.getByLabelText("Round-trip efficiency (%)");
     await user.clear(efficiency);
     await user.type(efficiency, "55");
+    await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
     await waitFor(() => expect(screen.getByTestId("top-pick").textContent).not.toBe(before));
   });
 
   it("shows placeholder batteries when the catalog cannot be loaded", async () => {
+    const user = userEvent.setup();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
@@ -222,18 +326,21 @@ describe("hourly sizer", () => {
     expect((await screen.findByTestId("catalog-placeholder")).textContent).toMatch(/placeholder batteries/i);
     expect(screen.getByTestId("catalog-placeholder").textContent).toMatch(/not your Sun Daddy catalog/i);
     expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: example placeholders (3 batteries)");
-    expect(screen.getByLabelText("Example Small cabinet name")).toBeTruthy();
-    expect(screen.getByLabelText("Example Medium cabinet name")).toBeTruthy();
-    expect(screen.getByLabelText("Example Large cabinet name")).toBeTruthy();
-    expect(screen.getByTestId("comparison-table").textContent).toContain("Example Small cabinet");
+    await goToResults(user);
+    const table = screen.getByTestId("comparison-table").textContent ?? "";
+    expect(table).toContain("Example Small cabinet");
+    expect(table).toContain("Example Medium cabinet");
+    expect(table).toContain("Example Large cabinet");
   });
 
   it("falls back to placeholders when the catalog is empty", async () => {
+    const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ batteries: [], warnings: ["none"] })));
     render(<App />);
     expect((await screen.findByTestId("catalog-placeholder")).textContent).toMatch(/placeholder batteries/i);
-    expect(screen.getByLabelText("Example Large cabinet name")).toBeTruthy();
     expect(screen.getByTestId("catalog-source").textContent).toMatch(/example placeholders/);
+    await goToResults(user);
+    expect(screen.getByTestId("comparison-table").textContent).toContain("Example Large cabinet");
   });
 
   it("keeps the full catalog when a project lists one battery", async () => {
@@ -245,7 +352,7 @@ describe("hourly sizer", () => {
         if (url.includes("/api/sun-daddy/batteries")) return jsonResponse({ batteries: catalogFixture, warnings: [] });
         if (url.includes("/api/sun-daddy/projects")) {
           return jsonResponse({
-            projects: [{ id: 93, name: "Synthetic warehouse" }],
+            projects: [{ id: 93, name: "Synthetic warehouse", customer_name: "Synthetic Customer" }],
             warnings: [],
           });
         }
@@ -254,24 +361,30 @@ describe("hourly sizer", () => {
       }),
     );
     render(<App />);
-    expect((await screen.findByTestId("catalog-source")).textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    await waitFor(() => {
+      expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    });
+    await useExample(user);
     await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    await user.click(screen.getByRole("button", { name: "Synthetic warehouse" }));
+    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await user.click(screen.getByRole("button", { name: /Synthetic warehouse/ }));
     expect(await screen.findByText("Loaded Synthetic warehouse.")).toBeTruthy();
-    expect(screen.getByLabelText("Synthetic forty name")).toBeTruthy();
-    expect(screen.getByLabelText("Synthetic sixty name")).toBeTruthy();
-    expect(screen.getByLabelText("Synthetic block name")).toBeTruthy();
-    expect(screen.getByText("In this project")).toBeTruthy();
-    expect(within(screen.getByLabelText("Battery")).getByRole("option", { name: /Synthetic forty — in this project/ })).toBeTruthy();
-    expect(within(screen.getByLabelText("Battery")).getByRole("option", { name: "Synthetic sixty" })).toBeTruthy();
-    expect(within(screen.getByLabelText("Battery")).getByRole("option", { name: "Synthetic block" })).toBeTruthy();
+    await next(user);
+    await next(user);
+    await next(user);
+    await next(user);
+    const battery = screen.getByLabelText("Battery");
+    expect(within(battery).getByRole("option", { name: /Synthetic forty — in this project/ })).toBeTruthy();
+    expect(within(battery).getByRole("option", { name: "Synthetic sixty" })).toBeTruthy();
+    expect(within(battery).getByRole("option", { name: "Synthetic block" })).toBeTruthy();
     await waitFor(() => {
       expect(screen.getByTestId("selection-title").textContent).toBe("2 × Synthetic forty");
     });
     expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    expect(screen.getByTestId("comparison-table").textContent).toContain("Synthetic sixty");
   });
 
-  it("opens the Schedule 6 worksheet from the tool tab", async () => {
+  it("opens the Schedule 6 worksheet from the header", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Schedule 6 worksheet" }));

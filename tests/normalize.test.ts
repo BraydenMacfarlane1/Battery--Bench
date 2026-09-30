@@ -363,8 +363,26 @@ describe("numeric export ids", () => {
     });
     expect(listed.warnings).toEqual([]);
     expect(listed.projects).toEqual([
-      { id: "93", name: "Solar + Battery - Carport" },
-      { id: "94", name: "Solar only - Roof" },
+      {
+        id: "93",
+        name: "Solar + Battery - Carport",
+        customer_id: "80",
+        customer_name: "Synthetic Customer",
+        label: "Synthetic carport",
+        project_type: "solar_battery",
+        status: "complete",
+        site_address: "100 Synthetic Way",
+        utility: "Synthetic Power",
+        updated_at: "2026-03-02 12:00:00",
+      },
+      {
+        id: "94",
+        name: "Solar only - Roof",
+        customer_id: "81",
+        project_type: "solar",
+        status: "draft",
+        updated_at: "2026-03-02 12:00:00",
+      },
     ]);
   });
 
