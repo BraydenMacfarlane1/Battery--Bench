@@ -96,6 +96,28 @@ button { cursor: pointer; }
   border-top: 1px solid var(--line);
 }
 
+.catalog-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 14px;
+}
+
+.catalog-line p {
+  margin: 0;
+  font-weight: 650;
+}
+
+.in-project {
+  display: block;
+  margin-top: 4px;
+  color: var(--moss);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .project-list {
   list-style: none;
   padding: 0;

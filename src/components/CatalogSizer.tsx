@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MODEL_ASSUMPTIONS } from "../dispatch/assumptions";
 import {
   BACKUP_ASSUMPTIONS,
@@ -26,10 +26,10 @@ import {
 } from "../dispatch/rank";
 import { parseBilledPeaks, parseHourlyNumbers } from "../dispatch/series-input";
 import { simulateDispatch } from "../dispatch/simulate";
-import { syntheticExample } from "../dispatch/synthetic-example";
+import { syntheticBatteries, syntheticExample } from "../dispatch/synthetic-example";
 import type { Battery, DispatchStrategy, RateModel, SimulationResult } from "../dispatch/types";
-import { normalizeProjectList } from "../sun-daddy/normalize";
-import type { NormalizedStudy, ProjectListItem } from "../sun-daddy/types";
+import { normalizeBatteryCatalog, normalizeProjectList } from "../sun-daddy/normalize";
+import type { NormalizedStudy, ProjectListItem, SelectedBattery } from "../sun-daddy/types";
 import { InterconnectPanel } from "./InterconnectPanel";
 import { formatUsd } from "../sizing/tariff";
 
@@ -41,7 +41,21 @@ type BatteryRow = {
   discharge: string;
   cost: string;
   extra: string;
+  inProject: boolean;
 };
+
+type ProjectPick = {
+  id: string;
+  quantity: number | null;
+};
+
+type CatalogStatus =
+  | { state: "loading" }
+  | { state: "ready"; count: number }
+  | { state: "placeholder"; notice: string };
+
+const PLACEHOLDER_NOTICE = "These are placeholder batteries, not your Sun Daddy catalog.";
+const MAX_UNITS = 48;
 
 const STRATEGIES: { id: DispatchStrategy; label: string }[] = [
   { id: "combined", label: "Combined" },
@@ -54,7 +68,8 @@ const ROW_FIELDS = ["name", "usable", "charge", "discharge", "cost", "extra"] as
 
 const example = syntheticExample();
 
-function rowsFromBatteries(batteries: Battery[]): BatteryRow[] {
+function rowsFromBatteries(batteries: Battery[], picks: readonly ProjectPick[] = []): BatteryRow[] {
+  const picked = new Set(picks.map((pick) => pick.id));
   return batteries.map((battery) => ({
     key: battery.id,
     name: battery.name,
@@ -63,7 +78,65 @@ function rowsFromBatteries(batteries: Battery[]): BatteryRow[] {
     discharge: String(battery.max_discharge_rate_kw),
     cost: String(battery.cost_per_unit),
     extra: String(battery.cost_per_additional_unit ?? battery.cost_per_unit),
+    inProject: picked.has(battery.id),
   }));
+}
+
+function readProjectPicks(selections: readonly SelectedBattery[] | undefined): ProjectPick[] {
+  if (!Array.isArray(selections)) return [];
+  const picks: ProjectPick[] = [];
+  for (const entry of selections) {
+    const raw = entry?.battery_id as unknown;
+    const id =
+      typeof raw === "number" && Number.isFinite(raw) ? String(raw) : typeof raw === "string" ? raw.trim() : "";
+    if (!id) continue;
+    const quantity = Number.isInteger(entry.quantity) && (entry.quantity ?? 0) >= 1 ? entry.quantity : null;
+    picks.push({ id, quantity });
+  }
+  return picks;
+}
+
+function includeQuantities(picks: readonly ProjectPick[]): Record<string, number[]> {
+  const include: Record<string, number[]> = {};
+  for (const pick of picks) {
+    if (pick.quantity == null) continue;
+    include[pick.id] = [pick.quantity];
+  }
+  return include;
+}
+
+function catalogSourceLabel(status: CatalogStatus, placeholderCount: number): string {
+  if (status.state === "loading") return "Battery catalog: loading Sun Daddy…";
+  if (status.state === "ready") return `Battery catalog: Sun Daddy (${countLabel(status.count)})`;
+  return `Battery catalog: example placeholders (${countLabel(placeholderCount)})`;
+}
+
+function countLabel(count: number): string {
+  return `${count} ${count === 1 ? "battery" : "batteries"}`;
+}
+
+function missingPickNote(picks: readonly ProjectPick[], ids: ReadonlySet<string>): string | null {
+  const missing = picks.filter((pick) => !ids.has(pick.id));
+  if (missing.length === 0) return null;
+  const list = missing.map((pick) => pick.id).join(", ");
+  return missing.length === 1
+    ? `Selected battery ${list} is not in the loaded catalog.`
+    : `Selected batteries ${list} are not in the loaded catalog.`;
+}
+
+function sameBatteryRows(current: readonly BatteryRow[], next: readonly BatteryRow[]): boolean {
+  if (current.length !== next.length) return false;
+  return current.every(
+    (row, index) =>
+      row.key === next[index]?.key &&
+      row.name === next[index]?.name &&
+      row.usable === next[index]?.usable &&
+      row.charge === next[index]?.charge &&
+      row.discharge === next[index]?.discharge &&
+      row.cost === next[index]?.cost &&
+      row.extra === next[index]?.extra &&
+      row.inProject === next[index]?.inProject,
+  );
 }
 
 function money(value: number | null): string {
@@ -91,6 +164,10 @@ export default function CatalogSizer() {
   const [fixedCharge, setFixedCharge] = useState("50");
   const [exportCredit, setExportCredit] = useState("0.03");
   const [batteries, setBatteries] = useState<BatteryRow[]>(rowsFromBatteries(example.batteries));
+  const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>({ state: "loading" });
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [projectPicks, setProjectPicks] = useState<ProjectPick[]>([]);
+  const [pickEpoch, setPickEpoch] = useState(0);
   const [strategy, setStrategy] = useState<DispatchStrategy>("combined");
   const [modeId, setModeId] = useState(RANKING_MODES[0].id);
   const [rte, setRte] = useState("90");
@@ -100,7 +177,7 @@ export default function CatalogSizer() {
   const [discount, setDiscount] = useState("6");
   const [escalator, setEscalator] = useState("2");
   const [analysisYears, setAnalysisYears] = useState("25");
-  const [maxQuantity, setMaxQuantity] = useState("3");
+  const [maxQuantity, setMaxQuantity] = useState("24");
   const [criticalKw, setCriticalKw] = useState("25");
   const [backupHours, setBackupHours] = useState("4");
   const [backupMode, setBackupMode] = useState<BackupLoadMode>("backup_loads");
@@ -118,6 +195,12 @@ export default function CatalogSizer() {
   const [sunMessage, setSunMessage] = useState<string | null>(null);
   const [studyWarnings, setStudyWarnings] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const catalogRequest = useRef(0);
+  const projectPicksRef = useRef(projectPicks);
+  const batteryRowsRef = useRef(batteries);
+  const appliedPickEpoch = useRef(0);
+  projectPicksRef.current = projectPicks;
+  batteryRowsRef.current = batteries;
 
   const sweep = useMemo(() => {
     try {
@@ -149,8 +232,8 @@ export default function CatalogSizer() {
         outageSoc,
         outageSolar,
       });
-      if (!(quantity >= 1) || !Number.isInteger(quantity) || quantity > 12) {
-        return { ok: false as const, error: "Max units must be a whole number from 1 to 12." };
+      if (!(quantity >= 1) || !Number.isInteger(quantity) || quantity > MAX_UNITS) {
+        return { ok: false as const, error: `Max units must be a whole number from 1 to ${MAX_UNITS}.` };
       }
       if (!(min >= 0) || !(max <= 1) || !(min < max)) {
         return { ok: false as const, error: "The state-of-charge window must sit between 0% and 100%, with the max above the min." };
@@ -169,6 +252,7 @@ export default function CatalogSizer() {
         rate_escalator: rateEscalator,
         analysis_years: yearsCount,
         backup,
+        include_quantities: includeQuantities(projectPicks),
       });
       return {
         ok: true as const,
@@ -217,6 +301,7 @@ export default function CatalogSizer() {
     peakDemand,
     fixedCharge,
     exportCredit,
+    projectPicks,
   ]);
 
   const model = useMemo(() => {
@@ -260,12 +345,85 @@ export default function CatalogSizer() {
   }, [model, selected]);
 
   useEffect(() => {
+    void loadCatalog();
+  }, []);
+
+  useEffect(() => {
+    if (appliedPickEpoch.current === pickEpoch) return;
+    if (!model.ok) return;
+    if (projectPicks.length === 0) {
+      appliedPickEpoch.current = pickEpoch;
+      return;
+    }
+    if (catalogStatus.state === "loading") return;
+    const pick = projectPicks.find((entry) => model.ranked.some((row) => row.battery.id === entry.id));
+    if (!pick) {
+      appliedPickEpoch.current = pickEpoch;
+      return;
+    }
+    const exact =
+      pick.quantity != null &&
+      model.ranked.some((row) => row.battery.id === pick.id && row.quantity === pick.quantity);
+    const quantity = exact
+      ? pick.quantity ?? 1
+      : bestQuantityForBattery(model.ranked, pick.id, model.mode, model.ctx);
+    appliedPickEpoch.current = pickEpoch;
+    setOverride({ batteryId: pick.id, quantity });
+  }, [model, projectPicks, pickEpoch, catalogStatus]);
+
+  useEffect(() => {
     if (!override || !model.ok) return;
+    if (appliedPickEpoch.current !== pickEpoch) return;
     const alive = model.ranked.some(
       (row) => row.battery.id === override.batteryId && row.quantity === override.quantity,
     );
     if (!alive) setOverride(null);
-  }, [model, override]);
+  }, [model, override, pickEpoch]);
+
+  async function loadCatalog() {
+    const requestId = catalogRequest.current + 1;
+    catalogRequest.current = requestId;
+    setCatalogBusy(true);
+    try {
+      const response = await fetch("/api/sun-daddy/batteries");
+      let body: unknown = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      if (requestId !== catalogRequest.current) return;
+      if (!response.ok || body == null) {
+        showPlaceholderCatalog();
+        return;
+      }
+      const catalog = normalizeBatteryCatalog(body);
+      if (catalog.batteries.length === 0) {
+        showPlaceholderCatalog();
+        return;
+      }
+      setBatteries(rowsFromBatteries(catalog.batteries, projectPicksRef.current));
+      setCatalogStatus({ state: "ready", count: catalog.batteries.length });
+      const note = missingPickNote(
+        projectPicksRef.current,
+        new Set(catalog.batteries.map((battery) => battery.id)),
+      );
+      if (note) {
+        setStudyWarnings((current) => (current.includes(note) ? current : [...current, note]));
+      }
+    } catch {
+      if (requestId !== catalogRequest.current) return;
+      showPlaceholderCatalog();
+    } finally {
+      if (requestId === catalogRequest.current) setCatalogBusy(false);
+    }
+  }
+
+  function showPlaceholderCatalog() {
+    const next = rowsFromBatteries(syntheticBatteries(), projectPicksRef.current);
+    setBatteries((current) => (sameBatteryRows(current, next) ? current : next));
+    setCatalogStatus({ state: "placeholder", notice: PLACEHOLDER_NOTICE });
+  }
 
   async function searchProjects() {
     setBusy(true);
@@ -323,7 +481,15 @@ export default function CatalogSizer() {
       setRate(study.pre_rate.rate);
       setSimpleRate(false);
     }
-    if (study.batteries.length > 0) setBatteries(rowsFromBatteries(study.batteries));
+    const picks = readProjectPicks(study.selected_batteries);
+    if (catalogStatus.state !== "loading") {
+      const note = missingPickNote(picks, new Set(batteryRowsRef.current.map((row) => row.key)));
+      if (note) notes.push(note);
+    }
+    projectPicksRef.current = picks;
+    setProjectPicks(picks);
+    setBatteries((current) => current.map((row) => ({ ...row, inProject: picks.some((pick) => pick.id === row.key) })));
+    setPickEpoch((epoch) => epoch + 1);
     if (study.economics.discount_rate != null) setDiscount(String(study.economics.discount_rate * 100));
     if (study.economics.rate_escalator != null) setEscalator(String(study.economics.rate_escalator * 100));
     if (study.economics.analysis_period != null) setAnalysisYears(String(study.economics.analysis_period));
@@ -339,12 +505,19 @@ export default function CatalogSizer() {
     setLoadKwh(fresh.load_kwh);
     setSolarKwh(fresh.solar_kwh);
     setRate(fresh.rate);
-    setBatteries(rowsFromBatteries(fresh.batteries));
     setSimpleRate(false);
     setBilledText("140");
     setSource("example");
     setStudyWarnings([]);
     setSunMessage(null);
+    clearProjectMarks();
+  }
+
+  function clearProjectMarks() {
+    projectPicksRef.current = [];
+    setProjectPicks([]);
+    setBatteries((current) => (current.some((row) => row.inProject) ? current.map((row) => ({ ...row, inProject: false })) : current));
+    setOverride(null);
   }
 
   function readLoadFile(text: string) {
@@ -409,7 +582,7 @@ export default function CatalogSizer() {
         <section className="panel" aria-labelledby="inputs-title">
           <div className="panel-head">
             <h2 id="inputs-title">Inputs</h2>
-            <p>The synthetic example runs with no login. Sun Daddy is optional and stays on the worker.</p>
+            <p>The synthetic building runs with no login. Battery options come from the Sun Daddy catalog when the worker can reach it.</p>
           </div>
           <div className="segmented" role="group" aria-label="Load source">
             <button type="button" aria-pressed={source === "example"} onClick={loadExample}>
@@ -609,7 +782,8 @@ export default function CatalogSizer() {
           </div>
           <p className="meta">
             One billed-peak number is repeated for every month. Twelve numbers are January through December. Blank uses
-            the hourly peak.
+            the hourly peak. Max units is a ceiling: each battery is swept only across quantities that can matter for
+            this site's peak, and the run stays capped so a small unit and a very large unit can share one catalog.
           </p>
 
           <fieldset className="presets">
@@ -672,6 +846,17 @@ export default function CatalogSizer() {
             </p>
           </fieldset>
 
+          <div className="catalog-line">
+            <p data-testid="catalog-source">{catalogSourceLabel(catalogStatus, batteries.length)}</p>
+            <button type="button" onClick={() => void loadCatalog()} disabled={catalogBusy}>
+              {catalogBusy ? "Loading…" : "Reload catalog"}
+            </button>
+          </div>
+          {catalogStatus.state === "placeholder" ? (
+            <p className="warn-line" role="status" data-testid="catalog-placeholder">
+              {catalogStatus.notice}
+            </p>
+          ) : null}
           <div className="table-wrap">
             <table>
               <caption>Batteries</caption>
@@ -700,6 +885,7 @@ export default function CatalogSizer() {
                             )
                           }
                         />
+                        {field === "name" && row.inProject ? <span className="in-project">In this project</span> : null}
                       </td>
                     ))}
                     <td>
@@ -730,6 +916,7 @@ export default function CatalogSizer() {
                   discharge: "50",
                   cost: "40000",
                   extra: "30000",
+                  inProject: false,
                 },
               ])
             }
@@ -772,6 +959,7 @@ export default function CatalogSizer() {
                 ctx={model.ctx}
                 selected={selected}
                 pinned={selection.pinned}
+                projectIds={projectPicks.map((pick) => pick.id)}
                 onBattery={chooseBattery}
                 onQuantity={chooseQuantity}
                 onReset={() => setOverride(null)}
@@ -894,6 +1082,7 @@ function BatteryOverride({
   ctx,
   selected,
   pinned,
+  projectIds,
   onBattery,
   onQuantity,
   onReset,
@@ -904,12 +1093,14 @@ function BatteryOverride({
   ctx: RankContext;
   selected: CandidateMetrics;
   pinned: boolean;
+  projectIds: readonly string[];
   onBattery: (batteryId: string) => void;
   onQuantity: (quantity: number) => void;
   onReset: () => void;
 }) {
   const batteries = uniqueBatteries(swept);
   const nameCount = new Map<string, number>();
+  const inProject = new Set(projectIds);
   for (const battery of batteries) nameCount.set(battery.name, (nameCount.get(battery.name) ?? 0) + 1);
   const quantities = swept
     .filter((row) => row.battery.id === selected.battery.id)
@@ -922,10 +1113,11 @@ function BatteryOverride({
         <select value={selected.battery.id} onChange={(event) => onBattery(event.target.value)}>
           {batteries.map((battery) => {
             const base = (nameCount.get(battery.name) ?? 0) > 1 ? `${battery.name} (${battery.id})` : battery.name;
+            const project = inProject.has(battery.id) ? " — in this project" : "";
             const misses = batteryMissesConstraint(ranked, battery.id, mode, ctx);
             return (
               <option key={battery.id} value={battery.id}>
-                {misses ? `${base} — misses ranking constraint` : base}
+                {misses ? `${base}${project} — misses ranking constraint` : `${base}${project}`}
               </option>
             );
           })}

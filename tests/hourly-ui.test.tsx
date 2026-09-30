@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
@@ -182,6 +182,95 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("comparison-table").textContent).toMatch(/\d+\.\d h/);
   });
 
+  it("loads the Sun Daddy battery catalog on startup", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/sun-daddy/batteries")) return jsonResponse({ batteries: catalogFixture, warnings: [] });
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    expect((await screen.findByTestId("catalog-source")).textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    expect(screen.queryByTestId("catalog-placeholder")).toBeNull();
+    for (const name of ["Synthetic forty", "Synthetic sixty", "Synthetic block"]) {
+      expect(screen.getByLabelText(`${name} name`)).toBeTruthy();
+      expect(screen.getByTestId("comparison-table").textContent).toContain(name);
+      expect(within(screen.getByLabelText("Battery")).getByRole("option", { name })).toBeTruthy();
+    }
+    expect(screen.queryByLabelText("Example Small cabinet name")).toBeNull();
+    const callsBeforeReload = fetchMock.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Reload catalog" }));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeReload));
+    expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+
+    const before = screen.getByTestId("top-pick").textContent;
+    const efficiency = screen.getByLabelText("Round-trip efficiency (%)");
+    await user.clear(efficiency);
+    await user.type(efficiency, "55");
+    await waitFor(() => expect(screen.getByTestId("top-pick").textContent).not.toBe(before));
+  });
+
+  it("shows placeholder batteries when the catalog cannot be loaded", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    );
+    render(<App />);
+    expect((await screen.findByTestId("catalog-placeholder")).textContent).toMatch(/placeholder batteries/i);
+    expect(screen.getByTestId("catalog-placeholder").textContent).toMatch(/not your Sun Daddy catalog/i);
+    expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: example placeholders (3 batteries)");
+    expect(screen.getByLabelText("Example Small cabinet name")).toBeTruthy();
+    expect(screen.getByLabelText("Example Medium cabinet name")).toBeTruthy();
+    expect(screen.getByLabelText("Example Large cabinet name")).toBeTruthy();
+    expect(screen.getByTestId("comparison-table").textContent).toContain("Example Small cabinet");
+  });
+
+  it("falls back to placeholders when the catalog is empty", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ batteries: [], warnings: ["none"] })));
+    render(<App />);
+    expect((await screen.findByTestId("catalog-placeholder")).textContent).toMatch(/placeholder batteries/i);
+    expect(screen.getByLabelText("Example Large cabinet name")).toBeTruthy();
+    expect(screen.getByTestId("catalog-source").textContent).toMatch(/example placeholders/);
+  });
+
+  it("keeps the full catalog when a project lists one battery", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/sun-daddy/batteries")) return jsonResponse({ batteries: catalogFixture, warnings: [] });
+        if (url.includes("/api/sun-daddy/projects")) {
+          return jsonResponse({
+            projects: [{ id: 93, name: "Synthetic warehouse" }],
+            warnings: [],
+          });
+        }
+        if (url.includes("/api/sun-daddy/project/93")) return jsonResponse({ normalized: projectWithOneBattery() });
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    render(<App />);
+    expect((await screen.findByTestId("catalog-source")).textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
+    await user.click(screen.getByRole("button", { name: "Synthetic warehouse" }));
+    expect(await screen.findByText("Loaded Synthetic warehouse.")).toBeTruthy();
+    expect(screen.getByLabelText("Synthetic forty name")).toBeTruthy();
+    expect(screen.getByLabelText("Synthetic sixty name")).toBeTruthy();
+    expect(screen.getByLabelText("Synthetic block name")).toBeTruthy();
+    expect(screen.getByText("In this project")).toBeTruthy();
+    expect(within(screen.getByLabelText("Battery")).getByRole("option", { name: /Synthetic forty — in this project/ })).toBeTruthy();
+    expect(within(screen.getByLabelText("Battery")).getByRole("option", { name: "Synthetic sixty" })).toBeTruthy();
+    expect(within(screen.getByLabelText("Battery")).getByRole("option", { name: "Synthetic block" })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId("selection-title").textContent).toBe("2 × Synthetic forty");
+    });
+    expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
+  });
+
   it("opens the Schedule 6 worksheet from the tool tab", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -190,3 +279,84 @@ describe("hourly sizer", () => {
     expect(screen.getByTestId("gross-demand").textContent).toContain("1,131");
   });
 });
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** Export-shaped catalog rows. Ids are numbers, the way the live export sends them. */
+const catalogFixture = [
+  {
+    id: 101,
+    name: "Synthetic forty",
+    manufacturer: "Synthetic",
+    model: "S40",
+    usable_capacity_kwh: 40,
+    max_charge_rate_kw: 20,
+    max_discharge_rate_kw: 20,
+    cost_per_unit: 22000,
+    cost_per_additional_unit: 18000,
+    round_trip_efficiency: 0.9,
+  },
+  {
+    id: 102,
+    name: "Synthetic sixty",
+    manufacturer: "Synthetic",
+    model: "S60",
+    usable_capacity_kwh: 60,
+    max_charge_rate_kw: 30,
+    max_discharge_rate_kw: 30,
+    cost_per_unit: 30000,
+    round_trip_efficiency: 0.9,
+  },
+  {
+    id: 103,
+    name: "Synthetic block",
+    manufacturer: "Synthetic",
+    model: "BLK",
+    usable_capacity_kwh: 3854,
+    max_charge_rate_kw: 1927,
+    max_discharge_rate_kw: 1927,
+    cost_per_unit: 800000,
+    round_trip_efficiency: 0.9,
+  },
+];
+
+function projectWithOneBattery() {
+  return {
+    schema_version: 1,
+    project_id: "93",
+    project_name: "Synthetic warehouse",
+    warnings: [],
+    load_kwh: null,
+    monthly_kwh: null,
+    billed_peak_kw: new Array<number | null>(12).fill(null),
+    solar_kwh: null,
+    solar_series: [],
+    pre_rate: { rate: null, warnings: [] },
+    post_rates: [],
+    batteries: [
+      {
+        id: "101",
+        name: "Synthetic forty",
+        usable_capacity_kwh: 40,
+        max_charge_rate_kw: 20,
+        max_discharge_rate_kw: 20,
+        cost_per_unit: 22000,
+        round_trip_efficiency: 0.9,
+      },
+    ],
+    selected_batteries: [{ battery_id: 101, quantity: 2 }],
+    economics: {
+      discount_rate: 0.06,
+      rate_escalator: null,
+      federal_tax_rate: null,
+      state_tax_rate: null,
+      analysis_period: 20,
+      system_size_kw: 120,
+    },
+  };
+}
