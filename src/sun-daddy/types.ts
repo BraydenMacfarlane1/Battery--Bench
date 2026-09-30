@@ -33,6 +33,9 @@ export type NormalizedRate = {
   state: string | null;
 };
 
+/** How `load.hourly_source` described a complete hourly series. */
+export type LoadHourlySource = "measured" | "estimated";
+
 /** Phase 1 inputs plus the warnings the normalizer refused to guess through. */
 export type NormalizedStudy = {
   schema_version: number | null;
@@ -41,6 +44,8 @@ export type NormalizedStudy = {
   warnings: string[];
   /** Null when the hourly series is missing or has gaps. */
   load_kwh: number[] | null;
+  /** Null when the export does not name the source of the hourly series. */
+  load_hourly_source: LoadHourlySource | null;
   monthly_kwh: number[] | null;
   /** January–December. Null where the export has no peak. */
   billed_peak_kw: (number | null)[];

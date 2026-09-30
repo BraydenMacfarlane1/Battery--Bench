@@ -3,6 +3,7 @@ import { ALL_HOURS, HOURS_PER_YEAR } from "../dispatch/calendar";
 import type { Battery, DemandComponent, EnergyPeriod, HourMask, RateModel, SeasonDef } from "../dispatch/types";
 import {
   TARIFF_INCOMPLETE,
+  type LoadHourlySource,
   type NormalizedEconomics,
   type NormalizedRate,
   type NormalizedSolarSeries,
@@ -47,6 +48,7 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
 
   const load = asRecord(root.load);
   const hourlyLoad = readHourly(load?.hourly_kwh, "Load", warnings);
+  const hourlySource = readLoadHourlySource(load?.hourly_source);
   const monthly = readMonthly(load?.monthly_kwh, warnings);
   if (!hourlyLoad && monthly) {
     warnings.push("Only monthly kWh is available. Hourly dispatch needs an 8,760-hour load and will not invent a shape.");
@@ -72,6 +74,7 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
     project_name: projectName,
     warnings: dedupe(warnings),
     load_kwh: hourlyLoad,
+    load_hourly_source: hourlyLoad ? hourlySource : null,
     monthly_kwh: monthly,
     billed_peak_kw: billed,
     solar_kwh: solarSum,
@@ -891,6 +894,26 @@ function readPeaks(value: unknown, warnings: WarningBag): (number | null)[] {
   return peaks;
 }
 
+function readLoadHourlySource(value: unknown): LoadHourlySource | null {
+  const text = readString(value);
+  if (!text) return null;
+  const token = text.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (token === "measured" || token === "measured_hourly" || token === "meter" || token === "interval" || token === "fact") {
+    return "measured";
+  }
+  if (
+    token === "estimated" ||
+    token === "estimated_from_bills" ||
+    token === "from_bills" ||
+    token === "bills" ||
+    token === "monthly" ||
+    token === "bill"
+  ) {
+    return "estimated";
+  }
+  return null;
+}
+
 function readHourly(value: unknown, label: string, warnings: WarningBag): number[] | null {
   if (value == null) return null;
   if (!Array.isArray(value)) {
@@ -1145,6 +1168,7 @@ function emptyStudy(warnings: string[]): NormalizedStudy {
     project_name: null,
     warnings,
     load_kwh: null,
+    load_hourly_source: null,
     monthly_kwh: null,
     billed_peak_kw: new Array<number | null>(12).fill(null),
     solar_kwh: null,
