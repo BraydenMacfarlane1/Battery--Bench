@@ -6,8 +6,10 @@ import {
   type BackupLoadMode,
   type BackupLoadShape,
 } from "../../dispatch/backup";
+import type { IncentiveOutcome } from "../../dispatch/incentives";
 import type { CandidateMetrics } from "../../dispatch/rank";
 import type { SimulationResult } from "../../dispatch/types";
+import type { SunDaddyResult } from "../../sun-daddy/types";
 import { MONTH_SHORT, money, monthStamp, years } from "./format";
 import { backupScenarioText, compareWithBest } from "./model";
 import { DispatchChart } from "./HourlyCharts";
@@ -224,6 +226,83 @@ export function DispatchDay({
       <p className="meta">Hourly dispatch for the day that contains the highest building load. Grid import is after the battery.</p>
     </div>
   );
+}
+
+export function IncentiveColumns({
+  plainPayback,
+  plainNpv,
+  outcome,
+}: {
+  plainPayback: number | null;
+  plainNpv: number | null;
+  outcome: IncentiveOutcome | null;
+}) {
+  return (
+    <div className="incentive-grid" data-testid="incentive-columns">
+      <div>
+        <p className="money-kicker">Catalog price</p>
+        <p>Payback {years(plainPayback)}</p>
+        <p>NPV {money(plainNpv)}</p>
+        <p className="meta">Plain price. Incentives are not in these two figures.</p>
+      </div>
+      <div>
+        <p className="money-kicker">With battery incentives</p>
+        {outcome ? (
+          <>
+            <p data-testid="incentive-payback">Payback {years(outcome.paybackYears)}</p>
+            <p data-testid="incentive-npv">NPV {money(outcome.npvUsd)}</p>
+            <p className="meta">
+              {outcome.itcSource === "none"
+                ? "No battery tax credit is applied."
+                : `ITC ${(outcome.itcFraction * 100).toFixed(1)}% (${outcome.itcSource === "project_itc_pct" ? "project.itc_pct" : "incentive rows"}).`}
+              {outcome.macrsModeled ? " MACRS tax shield is included in this NPV." : " MACRS is not in this NPV."}
+            </p>
+            {outcome.notModeled.length > 0 ? <p className="meta">Not modeled: {outcome.notModeled.join(" ")}</p> : null}
+          </>
+        ) : (
+          <p className="meta">Incentive figures appear after a battery is ranked.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function SunDaddyResultCard({ results }: { results: readonly SunDaddyResult[] }) {
+  if (results.length === 0) return null;
+  return (
+    <section className="callout" data-testid="sun-daddy-result">
+      <p className="state-title">Sun Daddy&apos;s own result</p>
+      <p>Reference only. This is Sun Daddy&apos;s solar-plus-battery proposal, not a battery-only result from Battery Bench.</p>
+      {results.map((result, index) => {
+        const pre = sumRow(result.monthly_bills?.pre_usd ?? null);
+        const post = sumRow(result.monthly_bills?.post_usd ?? null);
+        return (
+          <div key={`${result.post_rate_id ?? "rate"}-${index}`}>
+            <p>
+              Annual savings {money(result.annual_savings)} · payback {years(result.payback_years)} · NPV {money(result.npv)}
+              {result.stale === true ? (
+                <span className="source-badge" data-testid="stale-badge">
+                  {" "}
+                  Stale
+                </span>
+              ) : null}
+            </p>
+            <p className="meta">
+              {result.dispatch_strategy ? `Strategy ${result.dispatch_strategy}. ` : ""}
+              {result.post_rate_id ? `Post rate ${result.post_rate_id}. ` : ""}
+              {result.computed_at ? `Computed ${result.computed_at}.` : "Computed time was not set."}
+              {pre != null && post != null ? ` Sun Daddy monthly bills sum to ${money(pre)} before and ${money(post)} after.` : ""}
+            </p>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function sumRow(values: readonly (number | null)[] | null): number | null {
+  if (!values || values.length === 0 || values.some((value) => value == null)) return null;
+  return values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 }
 
 function hoursOrEmpty(hours: number | null): string {

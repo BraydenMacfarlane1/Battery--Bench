@@ -1,4 +1,5 @@
 import { DEFAULT_DEGRADATION_PER_YEAR, DEFAULT_ROUND_TRIP_EFFICIENCY } from "./assumptions";
+import { chargePowerKw, dischargePowerKw, effectiveUsableKwh } from "./specs";
 import {
   assertRateModel,
   demandScaleByMonth,
@@ -46,12 +47,12 @@ export function resolveDegradation(battery: Battery): number {
 }
 
 export function fleetOf(battery: Battery, quantity: number, socMinFrac: number, socMaxFrac: number): Fleet {
-  const usableKwh = battery.usable_capacity_kwh * quantity;
+  const usableKwh = effectiveUsableKwh(battery) * quantity;
   const rte = resolveRoundTrip(battery);
   return {
     usableKwh,
-    maxCharge: battery.max_charge_rate_kw * quantity,
-    maxDischarge: battery.max_discharge_rate_kw * quantity,
+    maxCharge: chargePowerKw(battery) * quantity,
+    maxDischarge: dischargePowerKw(battery) * quantity,
     eta: Math.sqrt(rte),
     socMin: usableKwh * socMinFrac,
     socMax: usableKwh * socMaxFrac,

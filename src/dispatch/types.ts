@@ -70,10 +70,40 @@ export type Battery = {
   cost_per_unit: number;
   /** Units after the first. Defaults to cost_per_unit. */
   cost_per_additional_unit?: number;
-  /** AC round trip. Default 0.90. */
+  /**
+   * AC round trip as a fraction. 0.90 is 90%.
+   * Catalog `round_trip_efficiency_pct` wins when it is set. Otherwise this is the 90% assumption.
+   */
   round_trip_efficiency?: number;
+  /** "spec" when the catalog percent was used. "default" when the assumption was used. */
+  efficiency_source?: "spec" | "default";
   /** Fractional loss of usable capacity per year. Default 0.02. Not applied inside the single-year dispatch. */
   degradation_per_year?: number;
+  /** "spec" when degradation_pct_per_year was set. "default" when the assumption was used. */
+  degradation_source?: "spec" | "default";
+  /** Catalog percent, 90 means 90%. Null when Sun Daddy has not filled it. */
+  round_trip_efficiency_pct?: number | null;
+  /** Catalog percent per year. Null when Sun Daddy has not filled it. */
+  degradation_pct_per_year?: number | null;
+  warranty_years?: number | null;
+  warranty_throughput_kwh?: number | null;
+  /** Percent of usable kWh held back. Null leaves usable kWh unchanged. */
+  min_reserve_pct?: number | null;
+  backup_capable?: boolean | null;
+  /** Sustained kW. Used for hourly charge, and for discharge when peak_kw is absent. */
+  continuous_kw?: number | null;
+  /** Short-burst kW. Hourly discharge prefers this over continuous_kw. Backup ignores it. */
+  peak_kw?: number | null;
+  voltage?: number | null;
+  phases?: number | string | null;
+  coupling?: string | null;
+  dimensions_json?: unknown;
+  weight_kg?: number | null;
+  indoor_outdoor?: string | null;
+  max_units_per_system?: number | null;
+  datasheet_url?: string | null;
+  lead_time_weeks?: number | null;
+  cost_breakdown_json?: unknown;
 };
 
 export type DispatchStrategy = "demand_peak_shave" | "tou_arbitrage" | "solar_self_consumption" | "combined";

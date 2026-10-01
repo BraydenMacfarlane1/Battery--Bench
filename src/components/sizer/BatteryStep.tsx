@@ -137,7 +137,8 @@ export function BatteryStep() {
           </label>
         </div>
         <p className="meta">
-          Defaults are planning assumptions: 90% round trip, 2% degradation, 6% discount, 2% escalator, 25 years. Max units
+          Round-trip efficiency and degradation here are the assumptions used when a battery has no catalog spec. A
+          filled-in spec overrides that battery. Other defaults: 6% discount, 2% escalator, 25 years. Max units
           is a ceiling on the comparison sweep. The quantity menu still lists every whole number up to the count that
           covers about 1.5× this site&apos;s peak, at least 1 through 10, and never more than 100.
         </p>

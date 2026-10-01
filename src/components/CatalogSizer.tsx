@@ -10,7 +10,7 @@ import { parseHourlyNumbers } from "../dispatch/series-input";
 import { groupProjectsByCustomer } from "../sun-daddy/customers";
 import { normalizeBatteryCatalog, normalizeProjectList } from "../sun-daddy/normalize";
 import type { LoadHourlySource, NormalizedStudy, ProjectListItem } from "../sun-daddy/types";
-import { SizerProvider, type StudyMeta, type SizerContextValue } from "./sizer/context";
+import { SizerProvider, type StudyMeta, type SizerContextValue, type SunStudyView } from "./sizer/context";
 import { WizardChrome } from "./sizer/WizardChrome";
 import {
   PLACEHOLDER_NOTICE,
@@ -38,6 +38,11 @@ import { formatUtilityLabel, loadSourceBadge, missingHourlyLoadMessage, peakOf, 
 import { canAdvanceWizard, isWizardStep, type WizardStepId } from "./sizer/wizard";
 
 const example = syntheticExample();
+
+function percentPoints(fraction: number): string {
+  const points = Math.round(fraction * 1000) / 10;
+  return Number.isInteger(points) ? String(points) : points.toFixed(1);
+}
 
 export default function CatalogSizer() {
   const [step, setStep] = useState<WizardStepId>(1);
@@ -91,6 +96,9 @@ export default function CatalogSizer() {
   const [loadedNote, setLoadedNote] = useState<string | null>(null);
   const [sunLoadGap, setSunLoadGap] = useState<"monthly" | "incomplete" | null>(null);
   const [hourlySource, setHourlySource] = useState<LoadHourlySource | null>(null);
+  const [sunStudy, setSunStudy] = useState<SunStudyView | null>(null);
+  const [backupTargetA, setBackupTargetA] = useState("4");
+  const [backupTargetB, setBackupTargetB] = useState("8");
   const [studyWarnings, setStudyWarnings] = useState<string[]>([]);
   const [inputWarnings, setInputWarnings] = useState<string[]>([]);
   const [tariffWarnings, setTariffWarnings] = useState<string[]>([]);
@@ -414,9 +422,32 @@ export default function CatalogSizer() {
     setProjectPicks(picks);
     setBatteries((current) => current.map((row) => ({ ...row, inProject: picks.some((pick) => pick.id === row.key) })));
     setPickEpoch((epoch) => epoch + 1);
-    if (study.economics.discount_rate != null) setDiscount(String(study.economics.discount_rate * 100));
-    if (study.economics.rate_escalator != null) setEscalator(String(study.economics.rate_escalator * 100));
-    if (study.economics.analysis_period != null) setAnalysisYears(String(study.economics.analysis_period));
+    if (study.economics?.discount_rate != null) setDiscount(String(study.economics.discount_rate * 100));
+    if (study.economics?.rate_escalator != null) setEscalator(String(study.economics.rate_escalator * 100));
+    if (study.economics?.analysis_period != null) setAnalysisYears(String(study.economics.analysis_period));
+    const finance = study.finance ?? null;
+    const critical = finance?.critical_load_pct;
+    const backupTarget = finance?.backup_hours_target;
+    let backupFromSunDaddy = false;
+    let backupPrefillLabel: string | null = null;
+    if (critical != null && backupTarget != null) {
+      const points = percentPoints(critical);
+      setBackupMode("backup_loads");
+      setBackupShape("percent_of_load");
+      setBackupPercent(points);
+      setBackupHours(String(backupTarget));
+      backupFromSunDaddy = true;
+      backupPrefillLabel = `Prefilled from Sun Daddy (${points}% of the building, ${backupTarget} hour target).`;
+    }
+    setSunStudy({
+      profile: study.load_profile ?? null,
+      verification: study.pre_rate?.verification ?? null,
+      nem: study.pre_rate?.nem ?? null,
+      finance,
+      results: study.sunddaddy_results ?? [],
+      backupFromSunDaddy,
+      backupPrefillLabel,
+    });
     const peaks = study.billed_peak_kw.filter((peak) => peak != null);
     if (peaks.length === 12) setBilledText(study.billed_peak_kw.join(", "));
     setSource("sun");
@@ -449,6 +480,7 @@ export default function CatalogSizer() {
     setLoadedNote("Example data is ready.");
     setSunLoadGap(null);
     setHourlySource(null);
+    setSunStudy(null);
     setDiscount("6");
     setEscalator("2");
     setAnalysisYears("25");
@@ -468,6 +500,7 @@ export default function CatalogSizer() {
       setSource("manual");
       setSunLoadGap(null);
       setHourlySource(null);
+      setSunStudy(null);
       setInputWarnings([]);
       setLoadedNote("Hourly load is ready.");
       setMeta((current) =>
@@ -524,6 +557,11 @@ export default function CatalogSizer() {
     loadedNote,
     missingLoadMessage,
     loadSourceBadge: loadBadge,
+    sunStudy,
+    backupTargetA,
+    setBackupTargetA,
+    backupTargetB,
+    setBackupTargetB,
     groups,
     openCustomerKey,
     setOpenCustomerKey,

@@ -1,4 +1,5 @@
 import { HOURS_PER_YEAR } from "./calendar";
+import { backupPowerKw, chargePowerKw, effectiveUsableKwh } from "./specs";
 import { resolveRoundTrip } from "./simulate";
 import type { Battery } from "./types";
 
@@ -155,15 +156,15 @@ function packOf(input: BackupEstimateInput): PackBackup {
     throw new Error("Starting state of charge must be from 0% to 100%.");
   }
   const startSoc = Math.min(socMax, Math.max(socMin, requested));
-  const usable = battery.usable_capacity_kwh * input.quantity;
+  const usable = effectiveUsableKwh(battery) * input.quantity;
   const eta = Math.sqrt(rte);
   return {
     eta,
     startKwh: usable * startSoc,
     socMinKwh: usable * socMin,
     socMaxKwh: usable * socMax,
-    maxDischarge: battery.max_discharge_rate_kw * input.quantity,
-    maxCharge: battery.max_charge_rate_kw * input.quantity,
+    maxDischarge: backupPowerKw(battery) * input.quantity,
+    maxCharge: chargePowerKw(battery) * input.quantity,
     deliverableAc: usable * (startSoc - socMin) * eta,
     startSoc,
   };
@@ -368,6 +369,99 @@ function hoursAtLevel(kw: number, deliverableAc: number, maxDischarge: number): 
   if (!(kw > POWER_EPS)) return null;
   if (kw > maxDischarge + POWER_EPS) return 0;
   return deliverableAc / kw;
+}
+
+/** Shares of average building load shown when Sun Daddy has not set a critical-load target. */
+export const BACKUP_LOAD_SHARES = [1, 0.75, 0.5, 0.25] as const;
+
+export type BackupLimit = "kwh" | "kw";
+
+export type BackupShareHours = {
+  /** 1 is 100% of average building load. */
+  loadFraction: number;
+  hours: number | null;
+  limitedBy: BackupLimit | null;
+};
+
+export type BackupTargetShare = {
+  targetHours: number;
+  /** Share of average load that meets the target, capped at 100%. Null when average load is 0. */
+  percentOfBuilding: number | null;
+  /** Uncapped share. Above 1 means the whole building still has energy left at the target hour. */
+  uncappedFraction: number | null;
+  limitedBy: BackupLimit | null;
+  wholeBuildingMeetsTarget: boolean;
+};
+
+export type BackupRecommendation = {
+  deliverableAcKwh: number;
+  powerKw: number;
+  averageLoadKw: number;
+  shares: BackupShareHours[];
+  targets: BackupTargetShare[];
+};
+
+/**
+ * Backup hours at fixed shares of average load, and the share of the building
+ * that meets each target hour count.
+ *
+ * Energy is the same deliverable AC kWh as the outage estimate: usable kWh after
+ * min_reserve_pct, from a full charge down to the SOC minimum, times the square
+ * root of round-trip efficiency. Power is continuous_kw when the catalog sets it,
+ * otherwise max discharge kW. A share whose kW is above that power is limited by
+ * kW (hours are 0). Otherwise the hours are energy ÷ kW and the limit is kWh.
+ */
+export function recommendBackup(args: {
+  battery: Battery;
+  quantity: number;
+  averageLoadKw: number;
+  targetHours?: readonly number[];
+  socMin?: number;
+  socMax?: number;
+  startSoc?: number;
+}): BackupRecommendation {
+  const pack = packOf({
+    load_mode: "whole_building",
+    load_kwh: [],
+    battery: args.battery,
+    quantity: args.quantity,
+    soc_min: args.socMin,
+    soc_max: args.socMax,
+    start_soc: args.startSoc,
+  });
+  const average = args.averageLoadKw;
+  const targets = args.targetHours && args.targetHours.length > 0 ? args.targetHours : [4, 8];
+  return {
+    deliverableAcKwh: pack.deliverableAc,
+    powerKw: pack.maxDischarge,
+    averageLoadKw: average,
+    shares: BACKUP_LOAD_SHARES.map((fraction) => shareHours(fraction, average, pack.deliverableAc, pack.maxDischarge)),
+    targets: targets.map((hours) => targetShare(hours, average, pack.deliverableAc, pack.maxDischarge)),
+  };
+}
+
+function shareHours(fraction: number, averageKw: number, deliverableAc: number, powerKw: number): BackupShareHours {
+  if (!(averageKw > POWER_EPS)) return { loadFraction: fraction, hours: null, limitedBy: null };
+  const loadKw = averageKw * fraction;
+  if (loadKw > powerKw + POWER_EPS) return { loadFraction: fraction, hours: 0, limitedBy: "kw" };
+  return { loadFraction: fraction, hours: deliverableAc / loadKw, limitedBy: "kwh" };
+}
+
+function targetShare(targetHours: number, averageKw: number, deliverableAc: number, powerKw: number): BackupTargetShare {
+  if (!(averageKw > POWER_EPS) || !(targetHours > 0)) {
+    return { targetHours, percentOfBuilding: null, uncappedFraction: null, limitedBy: null, wholeBuildingMeetsTarget: false };
+  }
+  const energyFraction = deliverableAc / (averageKw * targetHours);
+  const powerFraction = powerKw / averageKw;
+  const uncapped = Math.min(energyFraction, powerFraction);
+  const limitedBy: BackupLimit = powerFraction < energyFraction ? "kw" : "kwh";
+  return {
+    targetHours,
+    percentOfBuilding: Math.min(1, Math.max(0, uncapped)) * 100,
+    uncappedFraction: uncapped,
+    limitedBy,
+    wholeBuildingMeetsTarget: uncapped >= 1 - 1e-9,
+  };
 }
 
 function groupHours(hours: number): string {

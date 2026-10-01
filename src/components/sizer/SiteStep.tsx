@@ -1,3 +1,4 @@
+import { DataQualityPanel } from "./DataQualityPanel";
 import { formatCount } from "./format";
 import { useSizer } from "./context";
 
@@ -50,6 +51,8 @@ export function SiteStep() {
           <p>{sizer.tariffWarnings.join(" ")}</p>
         </div>
       ) : null}
+
+      <DataQualityPanel />
 
       {sizer.checkWarnings.length > 0 ? (
         <details className="fold" data-testid="things-to-check">

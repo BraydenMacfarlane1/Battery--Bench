@@ -525,6 +525,29 @@ td input { min-width: 0; }
 .flag-info .flag-sev { color: #334155; }
 .footer { margin-top: var(--s3); }
 .span-field { grid-column: 1 / -1; }
+.quality-panel { display: grid; gap: 8px; margin: var(--s2) 0; }
+.quality-panel h3 { margin: 0; font-size: 16px; }
+.confidence { margin: 0; font-weight: 700; }
+.confidence-higher { color: var(--teal); }
+.confidence-medium { color: var(--amber); }
+.confidence-lower { color: var(--rose); }
+.bill-check.is-neutral { color: var(--amber); font-weight: 700; }
+.bill-check.is-good { color: var(--teal); font-weight: 700; }
+.bill-check.is-bad { color: var(--rose); font-weight: 700; }
+.incentive-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s2);
+  margin: var(--s2) 0;
+}
+.incentive-grid > div {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: var(--s2);
+  background: var(--card);
+}
+.incentive-grid > div:first-child { background: var(--navy-soft); }
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -537,7 +560,7 @@ td input { min-width: 0; }
 }
 
 @media (max-width: 800px) {
-  .topbar-inner, .layout, .form-grid, .summary-grid, .stat-grid, .goal-grid, .metrics, .override, .point-list {
+  .topbar-inner, .layout, .form-grid, .summary-grid, .stat-grid, .goal-grid, .metrics, .override, .point-list, .incentive-grid {
     grid-template-columns: 1fr;
   }
   .topbar-inner { align-items: flex-start; flex-direction: column; }

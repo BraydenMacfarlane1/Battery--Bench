@@ -17,6 +17,21 @@ export type ReportMonthRow = {
   savingsUsd: number;
 };
 
+export type ReportDataQuality = {
+  hourlySource: string;
+  peaksSource: string;
+  billCheck: string;
+  confidence: string;
+  rateVerification: string;
+  nemNote: string | null;
+};
+
+export type ReportIncentives = {
+  paybackYears: number | null;
+  npvUsd: number | null;
+  notes: string[];
+};
+
 export type SizingReport = {
   generatedAt: string;
   customerName: string;
@@ -40,4 +55,11 @@ export type SizingReport = {
   months: ReportMonthRow[];
   assumptions: string[];
   limitations: string[];
+  /** Null when the study did not come from Sun Daddy. */
+  dataQuality: ReportDataQuality | null;
+  /** Null when the incentive column could not be calculated. */
+  incentives: ReportIncentives | null;
+  backupRecommendation: string[];
+  efficiencyLabel: string | null;
+  degradationLabel: string | null;
 };

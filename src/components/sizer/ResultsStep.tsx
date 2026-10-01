@@ -1,14 +1,20 @@
 import { useMemo, useState } from "react";
-import { formatBackupHeadline } from "../../dispatch/backup";
+import { formatBackupHeadline, recommendBackup } from "../../dispatch/backup";
 import { MODEL_ASSUMPTIONS } from "../../dispatch/assumptions";
+import { degradationOf } from "../../dispatch/economics";
+import { incentiveOutcome } from "../../dispatch/incentives";
 import { constraintMissLabel } from "../../dispatch/rank";
+import { degradationLabel, efficiencyLabel } from "../../dispatch/specs";
+import { HOURS_PER_YEAR } from "../../dispatch/calendar";
 import { MONTH_SHORT, money, years } from "./format";
 import { SavingsChart } from "./HourlyCharts";
 import { BatteryOverride } from "./BatteryOverride";
-import { BackupResult, DispatchDay, MonthlyBills, SelectionCard, StatTiles } from "./ResultCards";
+import { DataQualityPanel, qualityView } from "./DataQualityPanel";
+import { BackupResult, DispatchDay, IncentiveColumns, MonthlyBills, SelectionCard, StatTiles, SunDaddyResultCard } from "./ResultCards";
 import { useSizer } from "./context";
 import { downloadBytes, downloadTextFile } from "../../report/download";
 import { buildReportCsv } from "../../report/csv";
+import type { IncentiveOutcome } from "../../dispatch/incentives";
 import type { SizingReport } from "../../report/types";
 
 export function ResultsStep() {
@@ -16,10 +22,27 @@ export function ResultsStep() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const selected = sizer.selection?.selected ?? null;
+  const incentives = useMemo(() => {
+    if (!sizer.model.ok || !selected) return null;
+    try {
+      return incentiveOutcome({
+        installedCostUsd: selected.installed_cost_usd,
+        annualSavingsUsd: selected.annual_savings_usd,
+        degradationPerYear: degradationOf(selected.battery),
+        rateEscalator: sizer.model.sim.rate_escalator,
+        discountRate: sizer.model.sim.discount_rate,
+        analysisYears: sizer.model.sim.analysis_years,
+        finance: sizer.sunStudy?.finance ?? null,
+        batteryId: selected.battery.id,
+      });
+    } catch {
+      return null;
+    }
+  }, [sizer.model, sizer.sunStudy, selected]);
   const report = useMemo(() => {
     if (!sizer.model.ok || !sizer.selection || !selected || !sizer.rankMode) return null;
-    return buildReport(sizer, selected);
-  }, [sizer, selected]);
+    return buildReport(sizer, selected, incentives);
+  }, [sizer, selected, incentives]);
 
   if (!sizer.model.ok || !sizer.selection || !selected || !sizer.rankMode) {
     return (
@@ -69,7 +92,16 @@ export function ResultsStep() {
         modeLabel={mode.label}
         miss={constraintMissLabel(selected, mode, sizer.rankContext)}
       />
+      <p className="meta" data-testid="spec-labels">
+        Round trip {efficiencyLabel(selected.battery)}. Degradation {degradationLabel(selected.battery)}.
+      </p>
       <StatTiles selected={selected} />
+      <IncentiveColumns plainPayback={selected.simple_payback_years} plainNpv={selected.npv_usd} outcome={incentives} />
+      <DataQualityPanel />
+      <SunDaddyResultCard results={sizer.sunStudy?.results ?? []} />
+      <p className="note" data-testid="internal-export-note">
+        PDF and CSV are internal. They are not for customer distribution, and they are the only reports this tool builds.
+      </p>
       <div className="export-row">
         <button type="button" className="btn btn-primary" onClick={() => void downloadPdf()} disabled={exporting || !report}>
           {exporting ? "Preparing PDF…" : "Download PDF report"}
@@ -204,12 +236,13 @@ function caveatText(
   warnings: string[],
 ): string {
   const lead = (warnings.length > 0 ? warnings : ["Demand uses the hourly peak unless billed peaks are set."]).slice(0, 2);
-  return `${lead.join(" ")} ${sizer.checkWarnings.join(" ")} NPV is pre-tax and ignores incentives. Degradation is ${sizer.degradation}% per year, applied to the cash flows, not by re-simulating a worn battery.`;
+  return `${lead.join(" ")} ${sizer.checkWarnings.join(" ")} The catalog-price NPV is pre-tax and ignores incentives. The incentive column is separate and labels anything it does not model. Degradation on a battery with no catalog spec follows the advanced-assumptions field.`;
 }
 
 function buildReport(
   sizer: ReturnType<typeof useSizer>,
   selected: NonNullable<ReturnType<typeof useSizer>["selection"]>["selected"],
+  incentives: IncentiveOutcome | null,
 ): SizingReport {
   const months = sizer.detail
     ? [
@@ -231,6 +264,7 @@ function buildReport(
       ]
     : [];
   const ranked = sizer.comparison;
+  const quality = sizer.source === "sun" ? qualityView(sizer.sunStudy, sizer.tariffWarnings, sizer.loadSourceBadge) : null;
   return {
     generatedAt: new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }),
     customerName: sizer.meta.customerName,
@@ -264,8 +298,60 @@ function buildReport(
     months,
     assumptions: [...MODEL_ASSUMPTIONS],
     limitations: [
+      "INTERNAL - not for customer distribution.",
       "Battery Bench is a sizing worksheet, not an engineering stamp or a utility interconnection approval.",
       caveatText(sizer, selected.warnings),
     ],
+    dataQuality: quality
+      ? {
+          hourlySource: quality.hourlyLabel,
+          peaksSource: quality.peaksLabel,
+          billCheck: quality.billDetail ? `${quality.billTitle}. ${quality.billDetail}` : quality.billTitle,
+          confidence: quality.confidence,
+          rateVerification: quality.rateText,
+          nemNote: quality.nemNote,
+        }
+      : null,
+    incentives: incentives
+      ? {
+          paybackYears: incentives.paybackYears,
+          npvUsd: incentives.npvUsd,
+          notes: [...incentives.notes, ...incentives.notModeled.map((line) => `Not modeled: ${line}`)],
+        }
+      : null,
+    backupRecommendation: backupRecommendationLines(sizer, selected),
+    efficiencyLabel: efficiencyLabel(selected.battery),
+    degradationLabel: degradationLabel(selected.battery),
   };
+}
+
+function backupRecommendationLines(
+  sizer: ReturnType<typeof useSizer>,
+  selected: NonNullable<ReturnType<typeof useSizer>["selection"]>["selected"],
+): string[] {
+  const lines: string[] = [];
+  if (sizer.sunStudy?.backupPrefillLabel) lines.push(sizer.sunStudy.backupPrefillLabel);
+  if (!sizer.hasData) return lines;
+  try {
+    const targets = [Number(sizer.backupTargetA), Number(sizer.backupTargetB)].filter((hours) => Number.isFinite(hours) && hours > 0);
+    const recommendation = recommendBackup({
+      battery: selected.battery,
+      quantity: selected.quantity,
+      averageLoadKw: sizer.annualLoadKwh / HOURS_PER_YEAR,
+      targetHours: targets,
+    });
+    for (const share of recommendation.shares) {
+      const hours = share.hours == null ? "n/a" : `${share.hours.toFixed(1)} h`;
+      const limit = share.limitedBy === "kw" ? "limited by kW" : share.limitedBy === "kwh" ? "limited by kWh" : "";
+      lines.push(`${Math.round(share.loadFraction * 100)}% of average load: ${hours}${limit ? ` (${limit})` : ""}`);
+    }
+    for (const target of recommendation.targets) {
+      if (target.percentOfBuilding == null) lines.push(`${target.targetHours} h target: average load is zero.`);
+      else if (target.wholeBuildingMeetsTarget) lines.push(`${target.targetHours} h target: whole building is covered.`);
+      else lines.push(`${target.targetHours} h target: ${target.percentOfBuilding.toFixed(0)}% of the building, limited by ${target.limitedBy === "kw" ? "kW" : "kWh"}.`);
+    }
+  } catch (error) {
+    lines.push(error instanceof Error ? error.message : "Backup recommendation could not be calculated.");
+  }
+  return lines;
 }

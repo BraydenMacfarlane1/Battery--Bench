@@ -3,13 +3,23 @@ import { ALL_HOURS, HOURS_PER_YEAR } from "../dispatch/calendar";
 import type { Battery, DemandComponent, EnergyPeriod, HourMask, RateModel, SeasonDef } from "../dispatch/types";
 import {
   TARIFF_INCOMPLETE,
+  type BillCheck,
+  type BillCheckGrade,
+  type BillCheckStatus,
+  type HourlySourceKind,
   type LoadHourlySource,
+  type LoadProfileMeta,
+  type NemScheduleInfo,
   type NormalizedEconomics,
   type NormalizedRate,
   type NormalizedSolarSeries,
   type NormalizedStudy,
+  type ProjectFinance,
+  type ProjectIncentive,
   type ProjectListItem,
+  type RateVerification,
   type SelectedBattery,
+  type SunDaddyResult,
 } from "./types";
 
 const EXPORT_CREDIT_FIELDS = [
@@ -48,7 +58,8 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
 
   const load = asRecord(root.load);
   const hourlyLoad = readHourly(load?.hourly_kwh, "Load", warnings);
-  const hourlySource = readLoadHourlySource(load?.hourly_source);
+  const hourlyClass = classifyHourlySource(firstProfileRecord(load)?.hourly_source ?? load?.hourly_source);
+  const hourlySource = hourlyClass.legacy;
   const monthly = readMonthly(load?.monthly_kwh, warnings);
   if (!hourlyLoad && monthly) {
     warnings.push("Only monthly kWh is available. Hourly dispatch needs an 8,760-hour load and will not invent a shape.");
@@ -65,8 +76,12 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
   warnings.push(...preRate.warnings);
   for (const post of postRates) warnings.push(...post.warnings);
   const batteries = normalizeBatteryList(root.batteries, warnings);
-  const selectedBatteries = readBatterySelections(economicsRecord?.batteries, batteries, warnings);
-  const economics = normalizeEconomics(economicsRecord, warnings);
+  const selectionSource = Array.isArray(project.batteries) ? project.batteries : economicsRecord?.batteries;
+  const selectedBatteries = readBatterySelections(selectionSource, batteries, warnings);
+  const economics = normalizeEconomics(project, economicsRecord, warnings);
+  const finance = readProjectFinance(project, economicsRecord, economics, warnings);
+  const loadProfile = readLoadProfile(load, hourlyClass, warnings);
+  const sunResults = readSunDaddyResults(root.sunddaddy_results, warnings);
 
   return {
     schema_version: schema,
@@ -84,6 +99,10 @@ export function normalizeProjectExport(body: unknown): NormalizedStudy {
     batteries,
     selected_batteries: selectedBatteries,
     economics,
+    finance,
+    sunddaddy_results: sunResults,
+    load_profile: loadProfile,
+    units: root.units ?? null,
   };
 }
 
@@ -147,11 +166,11 @@ export function normalizeRatePair(rateBody: unknown, nemBody: unknown, label: st
   const warnings: WarningBag = [];
   const identity = rateIdentity(rateBody);
   if (!asRecord(rateBody) && !asRecord(nemBody)) {
-    return { rate: null, warnings: [`${label} was missing.`], ...identity };
+    return { rate: null, warnings: [`${label} was missing.`], ...identity, ...rateExtras(rateBody, nemBody) };
   }
   const built = rateBody ? buildRateModel(rateBody, warnings) : null;
   const model = applyExportCredit(built ?? emptyRate(label), rateBody, nemBody, warnings);
-  return { rate: model, warnings: dedupe(warnings), ...identity };
+  return { rate: model, warnings: dedupe(warnings), ...identity, ...rateExtras(rateBody, nemBody) };
 }
 
 function buildRateModel(body: unknown, warnings: WarningBag): RateModel | null {
@@ -445,19 +464,25 @@ function applyExportCredit(
           season_ids: seasons.length === 1 ? [seasons[0].id] : undefined,
         });
       }
+      noteNemLimits(nem, nemColumns, warnings);
       return { ...model, energy_periods: [...model.energy_periods, ...extraEnergy] };
     }
     if (credit) {
       if (credit.ambiguous) {
         warnings.push(TARIFF_INCOMPLETE);
         warnings.push("The NEM rate has more than one export credit field and none was applied.");
+        noteNemLimits(nem, nemColumns, warnings);
         return model;
       }
       exportCredit = credit.value;
+      noteNemLimits(nem, nemColumns, warnings);
       return { ...model, export_credit_kwh: exportCredit };
     }
+    const seasonal = seasonalExportCredit(model, nem, nemColumns, warnings);
+    if (seasonal) return seasonal;
     warnings.push(TARIFF_INCOMPLETE);
-    warnings.push("Export credits were not found on the linked NEM rate.");
+    warnings.push(nemMissingCredit(nem, nemColumns));
+    noteNemLimits(nem, nemColumns, warnings);
     return model;
   }
   const own = baseColumns ? readExportCredit(baseColumns) : null;
@@ -781,20 +806,38 @@ function readPostRates(value: unknown): NormalizedRate[] {
   if (!Array.isArray(post)) return [];
   return post.map((entry, index) => {
     const record = asRecord(entry);
-    if (!record) return { rate: null, warnings: [`Post rate ${index + 1} was not an object.`], utility: null, state: null };
+    if (!record) {
+      return {
+        rate: null,
+        warnings: [`Post rate ${index + 1} was not an object.`],
+        utility: null,
+        state: null,
+        ...rateExtras(null, null),
+      };
+    }
     return normalizeRatePair(record.rate, record.nem_rate, `Post rate ${index + 1}`);
   });
 }
 
-function normalizeEconomics(economics: Record<string, unknown> | null, warnings: WarningBag): NormalizedEconomics {
+function normalizeEconomics(
+  project: Record<string, unknown>,
+  economics: Record<string, unknown> | null,
+  warnings: WarningBag,
+): NormalizedEconomics {
   return {
-    discount_rate: percentField(economics?.discount_rate, "discount_rate", warnings),
-    rate_escalator: percentField(economics?.rate_escalator, "rate_escalator", warnings),
-    federal_tax_rate: percentField(economics?.federal_tax_rate, "federal_tax_rate", warnings),
-    state_tax_rate: percentField(economics?.state_tax_rate, "state_tax_rate", warnings),
-    analysis_period: integerField(economics?.analysis_period, "analysis_period", warnings),
-    system_size_kw: readFinite(economics?.system_size_kw),
+    discount_rate: percentField(prefer(project, economics, "discount_rate"), "discount_rate", warnings),
+    rate_escalator: percentField(prefer(project, economics, "rate_escalator"), "rate_escalator", warnings),
+    federal_tax_rate: percentField(prefer(project, economics, "federal_tax_rate"), "federal_tax_rate", warnings),
+    state_tax_rate: percentField(prefer(project, economics, "state_tax_rate"), "state_tax_rate", warnings),
+    analysis_period: integerField(prefer(project, economics, "analysis_period"), "analysis_period", warnings),
+    system_size_kw: readFinite(prefer(project, economics, "system_size_kw")),
   };
+}
+
+/** Project-level value when it is set, otherwise the nested economics value. Null does not override. */
+function prefer(project: Record<string, unknown>, economics: Record<string, unknown> | null, key: string): unknown {
+  if (project[key] != null) return project[key];
+  return economics ? economics[key] : undefined;
 }
 
 function normalizeBatteryList(value: unknown, warnings: WarningBag): Battery[] {
@@ -817,10 +860,8 @@ function normalizeBatteryList(value: unknown, warnings: WarningBag): Battery[] {
       continue;
     }
     const additional = readFinite(record.cost_per_additional_unit);
-    const rte = record.round_trip_efficiency == null ? DEFAULT_ROUND_TRIP_EFFICIENCY : readFinite(record.round_trip_efficiency);
-    if (rte == null) {
-      warnings.push(`${name} has a non-numeric round-trip efficiency. The 0.90 default was used.`);
-    }
+    const efficiency = resolveCatalogEfficiency(record, name, warnings);
+    const degradation = resolveCatalogDegradation(record, name, warnings);
     const id = readId(record.id) ?? name;
     batteries.push({
       id,
@@ -832,10 +873,111 @@ function normalizeBatteryList(value: unknown, warnings: WarningBag): Battery[] {
       max_discharge_rate_kw: discharge,
       cost_per_unit: cost,
       cost_per_additional_unit: additional ?? undefined,
-      round_trip_efficiency: rte ?? DEFAULT_ROUND_TRIP_EFFICIENCY,
+      round_trip_efficiency: efficiency.fraction,
+      efficiency_source: efficiency.source,
+      round_trip_efficiency_pct: efficiency.pct,
+      degradation_per_year: degradation.fraction ?? undefined,
+      degradation_source: degradation.source,
+      degradation_pct_per_year: degradation.pct,
+      warranty_years: readOptionalSpec(record.warranty_years, name, "warranty_years", warnings),
+      warranty_throughput_kwh: readOptionalSpec(record.warranty_throughput_kwh, name, "warranty_throughput_kwh", warnings),
+      min_reserve_pct: readReserve(record.min_reserve_pct, name, warnings),
+      backup_capable: readBool(record.backup_capable),
+      continuous_kw: readOptionalSpec(record.continuous_kw, name, "continuous_kw", warnings),
+      peak_kw: readOptionalSpec(record.peak_kw, name, "peak_kw", warnings),
+      voltage: readOptionalSpec(record.voltage, name, "voltage", warnings),
+      phases: readPhases(record.phases),
+      coupling: readString(record.coupling),
+      dimensions_json: record.dimensions_json ?? null,
+      weight_kg: readOptionalSpec(record.weight_kg, name, "weight_kg", warnings),
+      indoor_outdoor: readString(record.indoor_outdoor),
+      max_units_per_system: readMaxUnits(record.max_units_per_system, name, warnings),
+      datasheet_url: readString(record.datasheet_url),
+      lead_time_weeks: readOptionalSpec(record.lead_time_weeks, name, "lead_time_weeks", warnings),
+      cost_breakdown_json: record.cost_breakdown_json ?? null,
     });
   }
   return batteries;
+}
+
+/**
+ * round_trip_efficiency_pct wins (90 means 90%).
+ * A null percent and a null legacy field stay at 0.90.
+ * A legacy value above 1 is a percent, because Sun Daddy copies the percent into that field.
+ * A legacy value from 0 to 1 stays a fraction so older rows keep working.
+ */
+function resolveCatalogEfficiency(
+  record: Record<string, unknown>,
+  name: string,
+  warnings: WarningBag,
+): { fraction: number; source: "spec" | "default"; pct: number | null } {
+  if (record.round_trip_efficiency_pct != null) {
+    const pct = readFinite(record.round_trip_efficiency_pct);
+    if (pct != null && pct > 0 && pct <= 100) return { fraction: pct / 100, source: "spec", pct };
+    warnings.push(`${name} has a round_trip_efficiency_pct outside 0–100. The 90% default was used.`);
+    return { fraction: DEFAULT_ROUND_TRIP_EFFICIENCY, source: "default", pct: null };
+  }
+  if (record.round_trip_efficiency == null) {
+    return { fraction: DEFAULT_ROUND_TRIP_EFFICIENCY, source: "default", pct: null };
+  }
+  const legacy = readFinite(record.round_trip_efficiency);
+  if (legacy == null) {
+    warnings.push(`${name} has a non-numeric round-trip efficiency. The 90% default was used.`);
+    return { fraction: DEFAULT_ROUND_TRIP_EFFICIENCY, source: "default", pct: null };
+  }
+  // Older rows stored a fraction. The wizard still uses its assumption field for those,
+  // which is what it did before a catalog percent existed. A value above 1 is the percent Sun Daddy copies in.
+  if (legacy > 0 && legacy <= 1) return { fraction: legacy, source: "default", pct: null };
+  if (legacy > 1 && legacy <= 100) return { fraction: legacy / 100, source: "spec", pct: legacy };
+  warnings.push(`${name} has a round-trip efficiency outside 0–100%. The 90% default was used.`);
+  return { fraction: DEFAULT_ROUND_TRIP_EFFICIENCY, source: "default", pct: null };
+}
+
+function resolveCatalogDegradation(
+  record: Record<string, unknown>,
+  name: string,
+  warnings: WarningBag,
+): { fraction: number | null; source: "spec" | "default"; pct: number | null } {
+  if (record.degradation_pct_per_year == null) return { fraction: null, source: "default", pct: null };
+  const pct = readFinite(record.degradation_pct_per_year);
+  if (pct != null && pct >= 0 && pct < 100) return { fraction: pct / 100, source: "spec", pct };
+  warnings.push(`${name} has a degradation_pct_per_year outside 0–100. The 2% assumption will be used.`);
+  return { fraction: null, source: "default", pct: null };
+}
+
+function readReserve(value: unknown, name: string, warnings: WarningBag): number | null {
+  if (value == null) return null;
+  const pct = readFinite(value);
+  if (pct == null || pct < 0 || pct >= 100) {
+    warnings.push(`${name} has a min_reserve_pct outside 0–100 and it was not applied.`);
+    return null;
+  }
+  return pct;
+}
+
+function readOptionalSpec(value: unknown, name: string, label: string, warnings: WarningBag): number | null {
+  if (value == null) return null;
+  const numeric = readFinite(value);
+  if (numeric == null) {
+    warnings.push(`${name} has a non-numeric ${label} and it was left blank.`);
+    return null;
+  }
+  return numeric;
+}
+
+function readMaxUnits(value: unknown, name: string, warnings: WarningBag): number | null {
+  if (value == null) return null;
+  const numeric = readFinite(value);
+  if (numeric == null || !Number.isInteger(numeric) || numeric < 1) {
+    warnings.push(`${name} has a max_units_per_system that is not a whole number of 1 or more and it was left blank.`);
+    return null;
+  }
+  return numeric;
+}
+
+function readPhases(value: unknown): number | string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return readString(value);
 }
 
 function readSolarSeries(value: unknown, warnings: WarningBag): NormalizedSolarSeries[] {
@@ -894,12 +1036,18 @@ function readPeaks(value: unknown, warnings: WarningBag): (number | null)[] {
   return peaks;
 }
 
-function readLoadHourlySource(value: unknown): LoadHourlySource | null {
-  const text = readString(value);
-  if (!text) return null;
-  const token = text.trim().toLowerCase().replace(/[\s-]+/g, "_");
+function classifyHourlySource(value: unknown): { legacy: LoadHourlySource | null; kind: HourlySourceKind; raw: string | null } {
+  const raw = readString(value);
+  if (!raw) return { legacy: null, kind: "unknown", raw: null };
+  const token = raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (token === "measured" || token === "measured_hourly" || token === "meter" || token === "interval" || token === "fact") {
-    return "measured";
+    return { legacy: "measured", kind: "measured", raw };
+  }
+  if (token === "synthesized_from_bills" || token === "building_type_shape" || token === "building_type") {
+    if (token === "building_type" || token === "building_type_shape") {
+      return { legacy: null, kind: "building_type_shape", raw };
+    }
+    return { legacy: "estimated", kind: "synthesized_from_bills", raw };
   }
   if (
     token === "estimated" ||
@@ -909,9 +1057,9 @@ function readLoadHourlySource(value: unknown): LoadHourlySource | null {
     token === "monthly" ||
     token === "bill"
   ) {
-    return "estimated";
+    return { legacy: "estimated", kind: "synthesized_from_bills", raw };
   }
-  return null;
+  return { legacy: null, kind: "unknown", raw };
 }
 
 function readHourly(value: unknown, label: string, warnings: WarningBag): number[] | null {
@@ -1095,7 +1243,8 @@ function readBatterySelections(value: unknown, batteries: readonly Battery[], wa
         quantity = parsed;
       }
     }
-    selected.push({ battery_id: id, quantity });
+    const chargeSource = readString(record.charge_source);
+    selected.push(chargeSource ? { battery_id: id, quantity, charge_source: chargeSource } : { battery_id: id, quantity });
   }
   return selected;
 }
@@ -1161,6 +1310,359 @@ function emptyRate(label: string): RateModel {
   };
 }
 
+function rateExtras(rateBody: unknown, nemBody: unknown): Pick<NormalizedRate, "verification" | "nem"> {
+  return { verification: readVerification(rateBody), nem: readNemInfo(nemBody) };
+}
+
+function readVerification(rateBody: unknown): RateVerification {
+  const rate = asRecord(rateBody);
+  if (!rate) return { source_url: null, last_verified_at: null, effective_date: null, verified_by: null };
+  const columns = asRecord(rate.rate_schedules) ?? rate;
+  const model = asRecord(rate.model_json) ?? asRecord(columns.model_json);
+  return {
+    source_url: readString(columns.source_url) ?? readString(rate.source_url) ?? readString(model?.source_url),
+    last_verified_at: readString(columns.last_verified_at) ?? readString(rate.last_verified_at) ?? readString(model?.last_verified_at),
+    effective_date: readString(columns.effective_date) ?? readString(rate.effective_date) ?? readString(model?.effective_date),
+    verified_by: readString(columns.verified_by) ?? readString(rate.verified_by) ?? readString(model?.verified_by),
+  };
+}
+
+function readNemInfo(nemBody: unknown): NemScheduleInfo | null {
+  const nem = asRecord(nemBody);
+  if (!nem) return null;
+  const columns = asRecord(nem.rate_schedules) ?? nem;
+  const model = asRecord(nem.model_json) ?? asRecord(columns.model_json);
+  return {
+    id: readId(nem.id) ?? readId(columns.id),
+    name: readString(nem.name) ?? readString(columns.name),
+    is_nem_schedule: readBool(nem.is_nem_schedule) ?? readBool(columns.is_nem_schedule),
+    nem_type: readString(nem.nem_type) ?? readString(columns.nem_type),
+    export_credit_enabled: readBool(nem.export_credit_enabled) ?? readBool(columns.export_credit_enabled),
+    export_credit_summer_kwh: readFinite(nem.export_credit_summer_kwh) ?? readFinite(columns.export_credit_summer_kwh),
+    export_credit_winter_kwh: readFinite(nem.export_credit_winter_kwh) ?? readFinite(columns.export_credit_winter_kwh),
+    netting: readString(nem.netting) ?? readString(columns.netting) ?? readString(model?.netting),
+    export_credit_scope:
+      readString(nem.export_credit_scope) ?? readString(columns.export_credit_scope) ?? readString(model?.export_credit_scope),
+    export_credit_basis:
+      readString(nem.export_credit_basis) ?? readString(columns.export_credit_basis) ?? readString(model?.export_credit_basis),
+  };
+}
+
+function nemLabel(nem: Record<string, unknown>, columns: Record<string, unknown> | null): string {
+  const name = readString(nem.name) ?? (columns ? readString(columns.name) : null) ?? "The linked NEM rate";
+  const id = readId(nem.id) ?? (columns ? readId(columns.id) : null);
+  return id ? `${name} (rate ${id})` : name;
+}
+
+function nemMissingCredit(nem: Record<string, unknown>, columns: Record<string, unknown> | null): string {
+  return `${nemLabel(nem, columns)} has no export credit in Sun Daddy. No retail export credit was filled in, so none is assumed. Exports are treated as $0 in this bill.`;
+}
+
+/** Summer/winter credits, or a data-gap warning when export credits are explicitly off. Null when neither applies. */
+function seasonalExportCredit(
+  model: RateModel,
+  nem: Record<string, unknown>,
+  columns: Record<string, unknown> | null,
+  warnings: WarningBag,
+): RateModel | null {
+  const enabled = readBool(nem.export_credit_enabled) ?? (columns ? readBool(columns.export_credit_enabled) : null);
+  if (enabled === false) {
+    warnings.push(TARIFF_INCOMPLETE);
+    warnings.push(
+      `${nemLabel(nem, columns)} has export credits turned off in Sun Daddy. That is a data gap in the catalog, not a confirmed $0 credit. Exports are treated as $0 in this bill.`,
+    );
+    noteNemLimits(nem, columns, warnings);
+    return model;
+  }
+  const summer = readFinite(nem.export_credit_summer_kwh) ?? (columns ? readFinite(columns.export_credit_summer_kwh) : null);
+  const winter = readFinite(nem.export_credit_winter_kwh) ?? (columns ? readFinite(columns.export_credit_winter_kwh) : null);
+  if (summer == null && winter == null) return null;
+  if (summer != null && winter != null && Math.abs(summer - winter) > 1e-9) {
+    warnings.push(TARIFF_INCOMPLETE);
+    warnings.push(
+      `${nemLabel(nem, columns)} lists different summer and winter export credits. This model has one export price, so exports are treated as $0 rather than an average.`,
+    );
+    noteNemLimits(nem, columns, warnings);
+    return model;
+  }
+  noteNemLimits(nem, columns, warnings);
+  return { ...model, export_credit_kwh: summer ?? winter ?? 0 };
+}
+
+function noteNemLimits(
+  nem: Record<string, unknown>,
+  columns: Record<string, unknown> | null,
+  warnings: WarningBag,
+): void {
+  const model = asRecord(nem.model_json) ?? (columns ? asRecord(columns.model_json) : null);
+  const netting =
+    readString(nem.netting) ?? (columns ? readString(columns.netting) : null) ?? (model ? readString(model.netting) : null);
+  if (netting && !HOURLY_NETTING.has(netting.toLowerCase())) {
+    const line = `This tariff's netting is ${netting.toLowerCase()}. The bill is still netted each hour.`;
+    if (!warnings.includes(line)) {
+      if (!warnings.includes(TARIFF_INCOMPLETE)) warnings.unshift(TARIFF_INCOMPLETE);
+      warnings.push(line);
+    }
+  }
+  const scope =
+    readString(nem.export_credit_scope) ??
+    (columns ? readString(columns.export_credit_scope) : null) ??
+    (model ? readString(model.export_credit_scope) : null);
+  if (scope && !FULL_BILL_SCOPE.has(scope.toLowerCase())) {
+    const line = `Export credits are applied to the full bill. This tariff's export credit scope is ${scope.toLowerCase()}.`;
+    if (!warnings.includes(line)) {
+      if (!warnings.includes(TARIFF_INCOMPLETE)) warnings.unshift(TARIFF_INCOMPLETE);
+      warnings.push(line);
+    }
+  }
+  const basis =
+    readString(nem.export_credit_basis) ??
+    (columns ? readString(columns.export_credit_basis) : null) ??
+    (model ? readString(model.export_credit_basis) : null);
+  if (basis) {
+    const line = `Export credit basis is ${basis}. That hint is not modeled.`;
+    if (!warnings.includes(line)) warnings.push(line);
+  }
+}
+
+function readProjectFinance(
+  project: Record<string, unknown>,
+  economics: Record<string, unknown> | null,
+  normalized: NormalizedEconomics,
+  warnings: WarningBag,
+): ProjectFinance {
+  const addersRaw = prefer(project, economics, "itc_adders");
+  const incentives = readIncentives(prefer(project, economics, "incentives"), warnings);
+  const costAdders = prefer(project, economics, "cost_adders");
+  return {
+    itc_pct: percentField(prefer(project, economics, "itc_pct"), "itc_pct", warnings),
+    itc_adders: readItcAdders(addersRaw, warnings),
+    critical_load_pct: percentField(prefer(project, economics, "critical_load_pct"), "critical_load_pct", warnings),
+    backup_hours_target: readHoursTarget(prefer(project, economics, "backup_hours_target"), warnings),
+    use_macrs: readBool(prefer(project, economics, "use_macrs")),
+    federal_tax_rate: normalized.federal_tax_rate,
+    state_tax_rate: normalized.state_tax_rate,
+    battery_equipment_cost: readFinite(prefer(project, economics, "battery_equipment_cost")),
+    cost_adders_present: Array.isArray(costAdders) && costAdders.length > 0,
+    incentives,
+  };
+}
+
+function readItcAdders(value: unknown, warnings: WarningBag): number | null {
+  if (value == null) return null;
+  const percents: number[] = [];
+  const take = (entry: unknown) => {
+    if (typeof entry === "number" && Number.isFinite(entry)) {
+      percents.push(entry);
+      return;
+    }
+    const record = asRecord(entry);
+    const amount = record ? readFinite(record.value) : null;
+    if (amount != null) percents.push(amount);
+  };
+  if (Array.isArray(value)) value.forEach(take);
+  else take(value);
+  if (percents.length === 0) {
+    warnings.push("itc_adders was present and was not a percent or a list of percents.");
+    return null;
+  }
+  return percents.reduce((sum, entry) => sum + entry, 0) / 100;
+}
+
+function readHoursTarget(value: unknown, warnings: WarningBag): number | null {
+  if (value == null) return null;
+  const hours = readFinite(value);
+  if (hours == null || !(hours > 0)) {
+    warnings.push("backup_hours_target was not a positive number and was left blank.");
+    return null;
+  }
+  return hours;
+}
+
+function readIncentives(value: unknown, warnings: WarningBag): ProjectIncentive[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push("Project incentives were not an array and were skipped.");
+    return [];
+  }
+  return value.map((entry) => {
+    const record = asRecord(entry);
+    if (!record) {
+      return {
+        incentive_name: null,
+        incentive_type: null,
+        value: null,
+        cap_amount: null,
+        applies_to: null,
+        credit_level: null,
+        applies_battery_ids: [],
+        payout_timing: null,
+        spread_years: null,
+      };
+    }
+    return {
+      incentive_name: readString(record.incentive_name),
+      incentive_type: readString(record.incentive_type),
+      value: readFinite(record.value),
+      cap_amount: record.cap_amount == null ? null : readFinite(record.cap_amount),
+      applies_to: readString(record.applies_to),
+      credit_level: readString(record.credit_level),
+      applies_battery_ids: readIdList(record.applies_battery_ids) ?? [],
+      payout_timing: readString(record.payout_timing),
+      spread_years: integerField(record.spread_years, "spread_years", warnings),
+    };
+  });
+}
+
+function readSunDaddyResults(value: unknown, warnings: WarningBag): SunDaddyResult[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push("sunddaddy_results was not an array and was skipped.");
+    return [];
+  }
+  return value.map((entry) => {
+    const record = asRecord(entry);
+    const bills = record ? asRecord(record.monthly_bills) : null;
+    return {
+      post_rate_id: record ? readId(record.post_rate_id) : null,
+      dispatch_strategy: record ? readString(record.dispatch_strategy) : null,
+      annual_savings: record ? readFinite(record.annual_savings) : null,
+      payback_years: record ? readFinite(record.payback_years) : null,
+      npv: record ? readFinite(record.npv) : null,
+      irr: record ? readFinite(record.irr) : null,
+      monthly_bills: bills
+        ? { pre_usd: readNumberRow(bills.pre_usd), post_usd: readNumberRow(bills.post_usd) }
+        : null,
+      computed_at: record ? readString(record.computed_at) : null,
+      stale: record ? readBool(record.stale) : null,
+    };
+  });
+}
+
+function readNumberRow(value: unknown): (number | null)[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.map((entry) => (entry == null ? null : readFinite(entry)));
+}
+
+function readLoadProfile(
+  load: Record<string, unknown> | null,
+  hourlyClass: { kind: HourlySourceKind; raw: string | null },
+  warnings: WarningBag,
+): LoadProfileMeta {
+  const profile = firstProfileRecord(load);
+  if (profile && Array.isArray(profile.warnings)) {
+    for (const entry of profile.warnings) {
+      const text = readString(entry);
+      if (text) warnings.push(text);
+    }
+  }
+  return {
+    hourly_source: hourlyClass.raw,
+    hourly_kind: hourlyClass.kind,
+    monthly_source: profile ? readString(profile.monthly_source) : null,
+    peaks_source: profile ? readString(profile.peaks_source) : null,
+    warnings: profile && Array.isArray(profile.warnings) ? profile.warnings.filter((entry) => typeof entry === "string") : [],
+    bill_segments: profile && profile.bill_segments != null ? profile.bill_segments : null,
+    bill_check: profile ? readBillCheck(profile.bill_check) : null,
+  };
+}
+
+function firstProfileRecord(load: Record<string, unknown> | null): Record<string, unknown> | null {
+  const profiles = Array.isArray(load?.profiles) ? load.profiles : [];
+  return asRecord(profiles[0]);
+}
+
+function readBillCheck(value: unknown): BillCheck | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const statusRaw = readString(record.status)?.toLowerCase() ?? null;
+  const status: BillCheckStatus | null =
+    statusRaw === "ok" || statusRaw === "no_actuals" || statusRaw === "blocked" || statusRaw === "error" ? statusRaw : null;
+  const gradeRaw = readString(record.grade)?.toUpperCase() ?? null;
+  const grade: BillCheckGrade | null = gradeRaw === "A" || gradeRaw === "B" || gradeRaw === "C" || gradeRaw === "D" ? gradeRaw : null;
+  const annual = asRecord(record.annual);
+  return {
+    status,
+    blocked_reason: readString(record.blocked_reason),
+    rate_id: readId(record.rate_id),
+    rate_name: readString(record.rate_name),
+    periods: readBillPeriods(record.periods),
+    by_month: record.by_month ?? null,
+    annual: annual
+      ? {
+          actual: readFinite(annual.actual),
+          modeled: readFinite(annual.modeled),
+          delta_pct: readFinite(annual.delta_pct),
+        }
+      : null,
+    grade,
+    other_info_usd: readFinite(record.other_info_usd),
+    notes: readString(record.notes),
+    warnings: Array.isArray(record.warnings) ? record.warnings.filter((entry) => typeof entry === "string") : null,
+  };
+}
+
+function readBillPeriods(value: unknown): BillCheck["periods"] {
+  if (!Array.isArray(value)) return null;
+  return value.map((entry) => {
+    const record = asRecord(entry);
+    return {
+      actual: record ? readFinite(record.actual) : null,
+      modeled: record ? readFinite(record.modeled) : null,
+      delta_usd: record ? readFinite(record.delta_usd) : null,
+      delta_pct: record ? readFinite(record.delta_pct) : null,
+    };
+  });
+}
+
+function emptyEconomics(): NormalizedEconomics {
+  return {
+    discount_rate: null,
+    rate_escalator: null,
+    federal_tax_rate: null,
+    state_tax_rate: null,
+    analysis_period: null,
+    system_size_kw: null,
+  };
+}
+
+function emptyFinance(economics: NormalizedEconomics): ProjectFinance {
+  return {
+    itc_pct: null,
+    itc_adders: null,
+    critical_load_pct: null,
+    backup_hours_target: null,
+    use_macrs: null,
+    federal_tax_rate: economics.federal_tax_rate,
+    state_tax_rate: economics.state_tax_rate,
+    battery_equipment_cost: null,
+    cost_adders_present: false,
+    incentives: [],
+  };
+}
+
+function emptyProfile(): LoadProfileMeta {
+  return {
+    hourly_source: null,
+    hourly_kind: "unknown",
+    monthly_source: null,
+    peaks_source: null,
+    warnings: [],
+    bill_segments: null,
+    bill_check: null,
+  };
+}
+
+function readBool(value: unknown): boolean | null {
+  if (value === true || value === false) return value;
+  if (typeof value === "string") {
+    const token = value.trim().toLowerCase();
+    if (token === "true" || token === "yes") return true;
+    if (token === "false" || token === "no") return false;
+  }
+  return null;
+}
+
 function emptyStudy(warnings: string[]): NormalizedStudy {
   return {
     schema_version: null,
@@ -1173,17 +1675,14 @@ function emptyStudy(warnings: string[]): NormalizedStudy {
     billed_peak_kw: new Array<number | null>(12).fill(null),
     solar_kwh: null,
     solar_series: [],
-    pre_rate: { rate: null, warnings: [], utility: null, state: null },
+    pre_rate: { rate: null, warnings: [], utility: null, state: null, ...rateExtras(null, null) },
     post_rates: [],
     batteries: [],
     selected_batteries: [],
-    economics: {
-      discount_rate: null,
-      rate_escalator: null,
-      federal_tax_rate: null,
-      state_tax_rate: null,
-      analysis_period: null,
-      system_size_kw: null,
-    },
+    economics: emptyEconomics(),
+    finance: emptyFinance(emptyEconomics()),
+    sunddaddy_results: [],
+    load_profile: emptyProfile(),
+    units: null,
   };
 }

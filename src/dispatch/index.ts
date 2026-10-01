@@ -32,12 +32,24 @@ export {
 export {
   BACKUP_ASSUMPTIONS,
   BACKUP_HORIZON_HOURS,
+  BACKUP_LOAD_SHARES,
   DEFAULT_BACKUP_LOAD_FRACTION,
   estimateBackup,
   formatBackupHeadline,
   formatBackupPowerLimit,
+  recommendBackup,
 } from "./backup";
-export type { BackupEstimate, BackupEstimateInput, BackupLoadMode, BackupLoadShape, BackupScenario } from "./backup";
+export type {
+  BackupEstimate,
+  BackupEstimateInput,
+  BackupLimit,
+  BackupLoadMode,
+  BackupLoadShape,
+  BackupRecommendation,
+  BackupScenario,
+  BackupShareHours,
+  BackupTargetShare,
+} from "./backup";
 export {
   BACKUP_DURATION,
   BEST_PAYBACK,
