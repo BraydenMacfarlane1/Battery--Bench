@@ -10,10 +10,127 @@ export type NormalizedEconomics = {
   system_size_kw: number | null;
 };
 
-/** A row from `project.economics.batteries`. Quantity is null when the export omits a whole-number count. */
+/** A row from `project.batteries` or `project.economics.batteries`. Quantity is null when the export omits a whole-number count. */
 export type SelectedBattery = {
   battery_id: string;
   quantity: number | null;
+  /** Present when the export named a charge source, such as "solar" or "grid". */
+  charge_source?: string;
+};
+
+/** One incentive row. Percents stay in the export's units (30 means 30%) until the incentive math converts them. */
+export type ProjectIncentive = {
+  incentive_name: string | null;
+  incentive_type: string | null;
+  value: number | null;
+  cap_amount: number | null;
+  applies_to: string | null;
+  credit_level: string | null;
+  applies_battery_ids: string[];
+  payout_timing: string | null;
+  spread_years: number | null;
+};
+
+/**
+ * Battery incentive inputs. Tax rates and itc_pct are fractions (0.30 = 30%).
+ * critical_load_pct is also a fraction (0.30 = 30% of the building).
+ * Null means Sun Daddy has not filled the field.
+ */
+export type ProjectFinance = {
+  itc_pct: number | null;
+  itc_adders: number | null;
+  critical_load_pct: number | null;
+  backup_hours_target: number | null;
+  use_macrs: boolean | null;
+  federal_tax_rate: number | null;
+  state_tax_rate: number | null;
+  battery_equipment_cost: number | null;
+  /** True when cost_adders is a non-empty array. The rows are not priced. */
+  cost_adders_present: boolean;
+  incentives: ProjectIncentive[];
+};
+
+export type SunDaddyMonthlyBills = {
+  pre_usd: (number | null)[] | null;
+  post_usd: (number | null)[] | null;
+};
+
+/** One row of `sunddaddy_results`. Sun Daddy's solar-plus-battery proposal, not a battery-only result. */
+export type SunDaddyResult = {
+  post_rate_id: string | null;
+  dispatch_strategy: string | null;
+  annual_savings: number | null;
+  payback_years: number | null;
+  npv: number | null;
+  irr: number | null;
+  monthly_bills: SunDaddyMonthlyBills | null;
+  computed_at: string | null;
+  stale: boolean | null;
+};
+
+export type BillCheckStatus = "ok" | "no_actuals" | "blocked" | "error";
+export type BillCheckGrade = "A" | "B" | "C" | "D";
+
+export type BillCheckPeriod = {
+  actual: number | null;
+  modeled: number | null;
+  delta_usd: number | null;
+  delta_pct: number | null;
+};
+
+export type BillCheckAnnual = {
+  actual: number | null;
+  modeled: number | null;
+  delta_pct: number | null;
+};
+
+/** Sun Daddy's bill check. This app displays it and does not rebuild it. */
+export type BillCheck = {
+  status: BillCheckStatus | null;
+  blocked_reason: string | null;
+  rate_id: string | null;
+  rate_name: string | null;
+  periods: BillCheckPeriod[] | null;
+  by_month: unknown;
+  annual: BillCheckAnnual | null;
+  grade: BillCheckGrade | null;
+  other_info_usd: number | null;
+  notes: string | null;
+  warnings: string[] | null;
+};
+
+/** How the first load profile described its hourly series, including sources the older badge does not name. */
+export type HourlySourceKind = "measured" | "synthesized_from_bills" | "building_type_shape" | "unknown";
+
+export type LoadProfileMeta = {
+  /** Raw token, when the export sent one. */
+  hourly_source: string | null;
+  hourly_kind: HourlySourceKind;
+  monthly_source: string | null;
+  peaks_source: string | null;
+  warnings: string[];
+  bill_segments: unknown;
+  bill_check: BillCheck | null;
+};
+
+export type RateVerification = {
+  source_url: string | null;
+  last_verified_at: string | null;
+  effective_date: string | null;
+  verified_by: string | null;
+};
+
+export type NemScheduleInfo = {
+  id: string | null;
+  name: string | null;
+  is_nem_schedule: boolean | null;
+  nem_type: string | null;
+  export_credit_enabled: boolean | null;
+  export_credit_summer_kwh: number | null;
+  export_credit_winter_kwh: number | null;
+  netting: string | null;
+  export_credit_scope: string | null;
+  export_credit_basis: string | null;
 };
 
 export type NormalizedSolarSeries = {
@@ -31,6 +148,9 @@ export type NormalizedRate = {
   utility: string | null;
   /** State code from the rate record, such as "NV". */
   state: string | null;
+  verification: RateVerification;
+  /** Null when the export had no NEM object. */
+  nem: NemScheduleInfo | null;
 };
 
 /** How `load.hourly_source` described a complete hourly series. */
@@ -58,6 +178,13 @@ export type NormalizedStudy = {
   /** Batteries and quantities chosen on the project. The catalog itself stays separate. */
   selected_batteries: SelectedBattery[];
   economics: NormalizedEconomics;
+  finance: ProjectFinance;
+  /** Sun Daddy's own proposal results. Reference only. */
+  sunddaddy_results: SunDaddyResult[];
+  /** First load profile. Bill check and source tags live here. */
+  load_profile: LoadProfileMeta;
+  /** Top-level `units` value, unchanged. Null when the export omitted it. */
+  units: unknown;
 };
 
 export type ProjectListItem = {

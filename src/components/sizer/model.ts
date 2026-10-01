@@ -38,6 +38,14 @@ export type BatteryRow = {
   cost: string;
   extra: string;
   inProject: boolean;
+  /** Fraction from the catalog percent. Null uses the form assumption. */
+  rteFraction: number | null;
+  /** Fraction from degradation_pct_per_year. Null uses the form assumption. */
+  degradationFraction: number | null;
+  minReservePct: number | null;
+  continuousKw: number | null;
+  peakKw: number | null;
+  maxUnits: number | null;
 };
 
 export type ProjectPick = {
@@ -129,6 +137,12 @@ export function rowsFromBatteries(batteries: Battery[], picks: readonly ProjectP
     cost: String(battery.cost_per_unit),
     extra: String(battery.cost_per_additional_unit ?? battery.cost_per_unit),
     inProject: picked.has(battery.id),
+    rteFraction: battery.efficiency_source === "spec" ? (battery.round_trip_efficiency ?? null) : null,
+    degradationFraction: battery.degradation_source === "spec" ? (battery.degradation_per_year ?? null) : null,
+    minReservePct: battery.min_reserve_pct ?? null,
+    continuousKw: battery.continuous_kw ?? null,
+    peakKw: battery.peak_kw ?? null,
+    maxUnits: battery.max_units_per_system ?? null,
   }));
 }
 
@@ -184,7 +198,13 @@ export function sameBatteryRows(current: readonly BatteryRow[], next: readonly B
       row.discharge === next[index]?.discharge &&
       row.cost === next[index]?.cost &&
       row.extra === next[index]?.extra &&
-      row.inProject === next[index]?.inProject,
+      row.inProject === next[index]?.inProject &&
+      row.rteFraction === next[index]?.rteFraction &&
+      row.degradationFraction === next[index]?.degradationFraction &&
+      row.minReservePct === next[index]?.minReservePct &&
+      row.continuousKw === next[index]?.continuousKw &&
+      row.peakKw === next[index]?.peakKw &&
+      row.maxUnits === next[index]?.maxUnits,
   );
 }
 
@@ -512,8 +532,14 @@ export function batteriesToCatalog(rows: BatteryRow[], roundTrip: number, degrad
     max_discharge_rate_kw: requiredNumber(row.discharge, `${row.name} discharge kW`),
     cost_per_unit: requiredNumber(row.cost, `${row.name} first cost`),
     cost_per_additional_unit: requiredNumber(row.extra, `${row.name} additional cost`),
-    round_trip_efficiency: roundTrip,
-    degradation_per_year: degradation,
+    round_trip_efficiency: row.rteFraction ?? roundTrip,
+    efficiency_source: row.rteFraction != null ? "spec" : "default",
+    degradation_per_year: row.degradationFraction ?? degradation,
+    degradation_source: row.degradationFraction != null ? "spec" : "default",
+    min_reserve_pct: row.minReservePct,
+    continuous_kw: row.continuousKw,
+    peak_kw: row.peakKw,
+    max_units_per_system: row.maxUnits,
   }));
 }
 

@@ -43,22 +43,35 @@ export function buildReportPdf(report: SizingReport): Uint8Array {
   };
 
   doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
-  doc.rect(0, 0, pageWidth, 78, "F");
+  doc.rect(0, 0, pageWidth, 92, "F");
   doc.setFillColor(TEAL[0], TEAL[1], TEAL[2]);
-  doc.rect(0, 78, pageWidth, 4, "F");
+  doc.rect(0, 92, pageWidth, 4, "F");
   doc.setFont("helvetica", "bold");
   doc.setFontSize(20);
   doc.setTextColor(255, 255, 255);
-  doc.text("Battery Bench", margin, 36);
+  doc.text("Battery Bench", margin, 32);
+  doc.setFontSize(12);
+  doc.text("INTERNAL - not for customer distribution", margin, 54);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
-  doc.text("Battery sizing report", margin, 56);
-  doc.text(report.generatedAt, pageWidth - margin, 36, { align: "right" });
-  y = 110;
+  doc.text("Battery sizing report", margin, 74);
+  doc.text(report.generatedAt, pageWidth - margin, 32, { align: "right" });
+  y = 122;
 
   write(`${report.customerName} · ${report.projectName}`, 16, "bold", NAVY, 4);
   write(`Utility: ${report.utilityName}`, 11, "normal", MUTED, 2);
   write(`Rate: ${report.rateName}`, 11, "normal", MUTED, 8);
+
+  write("Data quality", 13, "bold", NAVY, 4);
+  if (report.dataQuality) {
+    write(
+      `Hourly source: ${report.dataQuality.hourlySource}. Peaks: ${report.dataQuality.peaksSource}. Bill check: ${report.dataQuality.billCheck}. Confidence: ${report.dataQuality.confidence}. ${report.dataQuality.rateVerification}`,
+      11,
+    );
+    if (report.dataQuality.nemNote) write(report.dataQuality.nemNote, 10, "normal", MUTED, 8);
+  } else {
+    write("No Sun Daddy data-quality record on this study.", 11, "normal", MUTED, 8);
+  }
 
   write("Load and solar", 13, "bold", NAVY, 4);
   write(
@@ -80,9 +93,27 @@ export function buildReportPdf(report: SizingReport): Uint8Array {
     8,
   );
 
-  if (report.backupHeadline) {
-    write("Backup duration", 13, "bold", NAVY, 4);
-    write(report.backupHeadline, 11, "normal", INK, 8);
+  if (report.efficiencyLabel || report.degradationLabel) {
+    write([report.efficiencyLabel, report.degradationLabel].filter(Boolean).join(". ") + ".", 10, "normal", MUTED, 8);
+  }
+
+  write("Incentive-adjusted (second column)", 13, "bold", NAVY, 4);
+  if (report.incentives) {
+    write(
+      `Incentive payback ${years(report.incentives.paybackYears)}. Incentive NPV ${money(report.incentives.npvUsd)}. Catalog-price payback and NPV above do not include incentives.`,
+      11,
+    );
+    for (const note of report.incentives.notes) write(note, 9, "normal", MUTED, 2);
+    y += 6;
+  } else {
+    write("Incentive figures were not calculated.", 11, "normal", MUTED, 8);
+  }
+
+  if (report.backupHeadline || report.backupRecommendation.length > 0) {
+    write("Backup", 13, "bold", NAVY, 4);
+    if (report.backupHeadline) write(report.backupHeadline, 11, "normal", INK, 4);
+    for (const line of report.backupRecommendation) write(line, 10, "normal", INK, 2);
+    y += 6;
   }
 
   write("Monthly bills", 13, "bold", NAVY, 6);
@@ -138,7 +169,7 @@ export function buildReportPdf(report: SizingReport): Uint8Array {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-    doc.text("Battery Bench is a sizing worksheet, not an engineering stamp or an interconnection approval.", margin, pageHeight - 32);
+    doc.text("INTERNAL - not for customer distribution. Not an engineering stamp or an interconnection approval.", margin, pageHeight - 32);
     doc.text(`${page} / ${pages}`, pageWidth - margin, pageHeight - 32, { align: "right" });
   }
 

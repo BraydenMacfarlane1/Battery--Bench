@@ -34,7 +34,16 @@ Strategies:
 | `demand_peak_shave` | Perfect foresight inside each calendar month. Holds the lowest flat grid-import cap the battery can sustain without charging above that cap. |
 | `combined` | Holds that same cap, charges from excess solar, and uses leftover state of charge for TOU arbitrage. |
 
-Degradation defaults to **2% of usable capacity per year**. That is a planning assumption, not a warranty. The single-year dispatch uses beginning-of-life capacity. Multi-year cash flows apply degradation later.
+Degradation defaults to **2% of usable capacity per year**. That is a planning assumption, not a warranty. The single-year dispatch uses beginning-of-life capacity. Multi-year cash flows apply degradation later. When a catalog battery has `degradation_pct_per_year`, that percent is used for its cash flow instead of the assumption. A null percent keeps the assumption.
+
+Catalog specs, when Sun Daddy has filled them in:
+
+- `round_trip_efficiency_pct` (90 means 90%) replaces the 90% assumption for that battery. The screen says which one was used. A null percent keeps the assumption, including the value typed under Advanced assumptions.
+- `min_reserve_pct` holds that share of usable kWh back before the state-of-charge window. Effective usable kWh = usable kWh × (1 − reserve). A null or 0 reserve changes nothing. A raised SOC minimum still applies on top of the reduced energy.
+- Hourly charge kW uses `continuous_kw` when it is set, otherwise max charge kW. Hourly discharge kW uses `peak_kw`, then `continuous_kw`, then max discharge kW. Backup power uses `continuous_kw` when it is set, otherwise max discharge kW. Peak kW is not treated as power the pack can hold for a whole outage hour.
+- `max_units_per_system`, when it is a whole number of 1 or more, caps that battery's quantity. Null leaves the existing sweep cap alone.
+
+Null specs match the behavior above with none of those fields set.
 
 ### 15-minute demand
 
@@ -58,13 +67,46 @@ Ranking modes are plain objects with a `compare` function: max annual savings (d
 
 ## Hourly sizer screen
 
-`npm run dev` opens a five-step wizard. Nothing is ranked until a study is loaded, so Next stays disabled on the first step. On load the screen asks `GET /api/sun-daddy/batteries` and uses that catalog for the ranking sweep and the override list, including when the load is the synthetic example, a CSV, or a Sun Daddy project. Opening a project does not replace the catalog; batteries listed on `project.economics.batteries` are marked in this project and the override starts on that battery and quantity. If the catalog request fails or returns nothing, the screen falls back to example placeholder cabinets and says so. The round-trip efficiency field (default 90%) is what the sweep uses. Sun Daddy does not store that value.
+`npm run dev` opens a five-step wizard. Nothing is ranked until a study is loaded, so Next stays disabled on the first step. On load the screen asks `GET /api/sun-daddy/batteries` and uses that catalog for the ranking sweep and the override list, including when the load is the synthetic example, a CSV, or a Sun Daddy project. Opening a project does not replace the catalog; batteries listed on `project.economics.batteries` are marked in this project and the override starts on that battery and quantity. If the catalog request fails or returns nothing, the screen falls back to example placeholder cabinets and says so. The round-trip efficiency field (default 90%) is the assumption used when a battery has no `round_trip_efficiency_pct`. A filled-in catalog percent overrides that field for that battery, and the results step says which one was used.
 
 1. **Project.** Sun Daddy search lists customers (grouped by `customer_name`; a missing name is "No customer"). Open a customer to see that customer's projects, then load one. Quiet alternatives: example data, or an 8,760-hour CSV. If the project has monthly bills but no complete hourly load, Next stays disabled and the step says so, with those same alternatives beside the message. When the export names `load.hourly_source`, a badge says whether the hourly series was measured or estimated from bills. The catalog status and a reload button stay above the step.
 2. **Site and rate.** Customer, project, utility, rate, annual kWh, peak kW, and solar. Data warnings sit in "Things to check". Billed monthly peaks and a simple rate override are collapsed.
 3. **Battery and goal.** Six goal cards (max savings is the default). Optional battery and quantity override. Efficiency, degradation, discount rate, escalator, analysis years, strategy, and max units (1–48, a ceiling on the peak-scaled sweep) sit under "Advanced assumptions".
-4. **Backup.** Optional. Whole building or backup loads (fixed kW or a percent), starting charge, and the optimistic solar credit. Skip leaves the defaults.
-5. **Results.** Recommendation, stat tiles, comparison (click a row to switch; Reset to best returns to the mode's pick), monthly bills, peak-day dispatch, savings versus size, and backup duration. Download a PDF or a CSV of the comparison and the monthly bills.
+4. **Backup.** Optional. If the project has both `critical_load_pct` and `backup_hours_target`, those values are prefilled and labeled "from Sun Daddy". Otherwise the step shows backup hours at 100/75/50/25% of average building load, and the percent of the building that meets a 4-hour and an 8-hour target (both editable). That recommendation uses usable kWh after `min_reserve_pct` and continuous kW as the power limit, and it says when kW, not kWh, is the limit. Whole building or backup loads, starting charge, and the optimistic solar credit still apply to the outage estimate. Skip leaves the defaults.
+5. **Results.** Recommendation, stat tiles, a catalog-price column and a battery-incentive column, data quality, Sun Daddy's own solar-plus-battery result when the export includes one, comparison (click a row to switch; Reset to best returns to the mode's pick), monthly bills, peak-day dispatch, savings versus size, and backup duration. Download an internal PDF or CSV. There is no customer-facing export.
+
+### Data quality
+
+The Site and Results steps show hourly source, peaks source, Sun Daddy's bill-check grade, and rate verification. The app does not rebuild a bill check. `no_actuals` means no bills were imported to check against. It is shown in amber as "Not verified: no bills to check against" and is never treated as a pass. Grades C and D, plus a blocked or error status, warn that savings are less reliable.
+
+Overall confidence is a label, not a probability:
+
+- **Lower** when the bill-check grade is C or D, the status is blocked or error, the hourly source is `building_type_shape`, or the hourly source is unknown and the grade is not A or B.
+- **Higher** only when the hourly source is measured, the grade is A or B, and the rate has `last_verified_at`.
+- **Medium** is every other combination. Measured or bill-synthesized hourly data with `no_actuals` is Medium. A missing `last_verified_at` blocks Higher and is labeled "rate not verified". It does not by itself force Lower.
+
+A rate shows `source_url` (as a link) and `last_verified_at` when those are filled in.
+
+### Net metering
+
+A NEM rate with export credits turned off is named in the warning, called out as a Sun Daddy data gap, and billed here with exports at $0. A NEM rate with no credit filled in also bills exports at $0 and does not assume a retail credit. Monthly netting and an export-credit scope other than the full bill are named. The bill still nets each hour and still applies credits to the full bill. An `export_credit_basis` hint is shown and not modeled. Summer and winter export credits are used when they are equal. When they differ, exports stay at $0 rather than an average.
+
+### Incentives
+
+The catalog-price payback and NPV stay the default column. The second column is incentive-adjusted and only includes incentives that apply to the battery (`applies_to` of battery, storage, system, project, all, or blank; a non-empty `applies_battery_ids` must name the battery; solar-only rows are skipped).
+
+- When `project.itc_pct` is set, the credit is that percent plus `itc_adders`. Tax-credit rows are not added again.
+- Otherwise each applicable tax credit is `value` percent of installed cost, capped by `cap_amount` when that is set. `spread_years` splits the credit over years 1 through N. Otherwise the credit is taken in year 0. `payout_timing` is not modeled.
+- MACRS is modeled only when `use_macrs` is true and a federal or state tax rate is set. It uses the 5-year half-year schedule (20%, 32%, 19.2%, 11.52%, 11.52%, 5.76%) on installed cost minus half the ITC. The depreciable share is the depreciation incentive's value when one applies, otherwise 100%. The shield is basis times the schedule times federal plus state tax. The federal deduction for state tax is not modeled. Bonus depreciation is not modeled. Shield years after the analysis period are dropped.
+- Cost adders are not priced. Sun Daddy's `battery_equipment_cost` is not substituted for the catalog price. Anything not in the list above is labeled "not modeled".
+
+### Sun Daddy's own result
+
+`sunddaddy_results` is shown as a reference card: annual savings, payback, NPV, and `computed_at`, with a Stale badge when `stale` is true. It is Sun Daddy's solar-plus-battery proposal, not this tool's battery-only result.
+
+### Reports
+
+PDF and CSV are internal. Both say "INTERNAL - not for customer distribution" and include data quality, the bill-check grade, the backup recommendation, and the incentive-adjusted figures. Battery Bench does not build a customer-facing document and does not show a battery price on one.
 
 Going back keeps what you entered. The example rate is still round numbers, not a utility tariff. Sun Daddy search calls the worker routes above. If the export token is missing, the screen says so and the example still runs.
 
@@ -157,4 +199,4 @@ Sun Daddy auth stays on the worker. `SUN_DADDY_BASE_URL` defaults to `https://co
 npx wrangler secret put SUN_DADDY_EXPORT_TOKEN
 ```
 
-The normalizer reads `schema_version` 1. Economics percents are divided by 100 (`6.0` = 6%). `round_trip_efficiency: null` becomes 0.90. Hourly gaps and monthly-only loads are left empty rather than shaped. A component with `value_type` `flat` and no hour mask is priced on every hour. `tax_rate` of 0 is ignored. A value between 0 and 1 is a fraction (`0.0825` = 8.25%). A value above 1 and at most 100 is a percent (`8.25` = 8.25%). Tariffs with tiered energy, percent adders, an ambiguous tax rate, annual true-up, or conflicting delivery and TOU prices return `Could not fully price this tariff.` instead of a guessed rate. Schedule 6 is not the fallback.
+The normalizer reads `schema_version` 1. Economics percents are divided by 100 (`6.0` = 6%), including `itc_pct`, `critical_load_pct`, and tax rates. `round_trip_efficiency_pct: null` and a null legacy `round_trip_efficiency` become 0.90. A legacy value above 1 is a percent (90 means 90%). A legacy value from 0 to 1 stays a fraction. New catalog, bill-check, rate-verification, and `sunddaddy_results` fields are kept and left null when Sun Daddy has not filled them. Hourly gaps and monthly-only loads are left empty rather than shaped. Nothing is written back to Sun Daddy. A component with `value_type` `flat` and no hour mask is priced on every hour. `tax_rate` of 0 is ignored. A value between 0 and 1 is a fraction (`0.0825` = 8.25%). A value above 1 and at most 100 is a percent (`8.25` = 8.25%). Tariffs with tiered energy, percent adders, an ambiguous tax rate, annual true-up, or conflicting delivery and TOU prices return `Could not fully price this tariff.` instead of a guessed rate. Schedule 6 is not the fallback.

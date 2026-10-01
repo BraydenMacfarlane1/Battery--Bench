@@ -3,9 +3,26 @@ import type { BackupLoadMode, BackupLoadShape } from "../../dispatch/backup";
 import type { CandidateMetrics, RankContext, RankingMode } from "../../dispatch/rank";
 import type { DispatchStrategy, SimulationResult } from "../../dispatch/types";
 import type { CustomerGroup } from "../../sun-daddy/customers";
-import type { ProjectListItem } from "../../sun-daddy/types";
+import type {
+  LoadProfileMeta,
+  NemScheduleInfo,
+  ProjectFinance,
+  ProjectListItem,
+  RateVerification,
+  SunDaddyResult,
+} from "../../sun-daddy/types";
 import type { RankSuccess, SweepFailure } from "./model";
 import type { WizardStepId } from "./wizard";
+
+export type SunStudyView = {
+  profile: LoadProfileMeta | null;
+  verification: RateVerification | null;
+  nem: NemScheduleInfo | null;
+  finance: ProjectFinance | null;
+  results: SunDaddyResult[];
+  backupFromSunDaddy: boolean;
+  backupPrefillLabel: string | null;
+};
 
 export type StudyMeta = {
   customerName: string;
@@ -31,6 +48,11 @@ export type SizerContextValue = {
   missingLoadMessage: string | null;
   /** Measured vs estimated, when the study names load.hourly_source. */
   loadSourceBadge: string | null;
+  sunStudy: SunStudyView | null;
+  backupTargetA: string;
+  setBackupTargetA: (value: string) => void;
+  backupTargetB: string;
+  setBackupTargetB: (value: string) => void;
   groups: CustomerGroup[];
   openCustomerKey: string | null;
   setOpenCustomerKey: (key: string | null) => void;

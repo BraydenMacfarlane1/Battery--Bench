@@ -53,6 +53,22 @@ function sampleReport(): SizingReport {
     ],
     assumptions: ["Hourly resolution only."],
     limitations: ["Not an engineering stamp."],
+    dataQuality: {
+      hourlySource: "Measured",
+      peaksSource: "billed",
+      billCheck: "Not verified: no bills to check against",
+      confidence: "Medium",
+      rateVerification: "Rate not verified",
+      nemNote: "NV Energy NMR-B (rate 36) has export credits turned off in Sun Daddy. Exports are treated as $0 in this bill.",
+    },
+    incentives: {
+      paybackYears: 4.5,
+      npvUsd: 12000,
+      notes: ["Not modeled: MACRS is not modeled."],
+    },
+    backupRecommendation: ["100% of average load: 6.0 h (limited by kWh)", "4 h target: whole building is covered."],
+    efficiencyLabel: "90% assumption (battery spec not set)",
+    degradationLabel: "2% per year assumption (battery spec not set)",
   };
 }
 
@@ -61,6 +77,24 @@ describe("report export", () => {
     const csv = buildReportCsv(sampleReport());
     expect(csv).toBe(
       [
+        "INTERNAL - not for customer distribution",
+        "Data quality",
+        "Hourly source,Measured",
+        "Peaks source,billed",
+        "Bill check,Not verified: no bills to check against",
+        "Confidence,Medium",
+        "Rate verification,Rate not verified",
+        "Net metering,NV Energy NMR-B (rate 36) has export credits turned off in Sun Daddy. Exports are treated as $0 in this bill.",
+        "Round trip,90% assumption (battery spec not set)",
+        "Degradation,2% per year assumption (battery spec not set)",
+        "Incentives",
+        "Incentive payback (years),4.50",
+        "Incentive NPV (USD),12000.00",
+        "Incentive notes,Not modeled: MACRS is not modeled.",
+        "Backup recommendation",
+        "100% of average load: 6.0 h (limited by kWh)",
+        "4 h target: whole building is covered.",
+        "",
         "Options comparison",
         "Battery,Quantity,Annual savings (USD),Payback (years),NPV (USD),Peak reduction (kW),Self-consumption (%),Equivalent cycles,Backup hours",
         "Small cabinet,2,12345.50,6.25,40000.00,18.2,81.0,240,4.0",
@@ -84,5 +118,8 @@ describe("report export", () => {
     expect(text).toContain("Northwind");
     expect(text).toContain("Small cabinet");
     expect(text).toContain("Not an engineering stamp.");
+    expect(text).toContain("INTERNAL - not for customer distribution");
+    expect(text).toContain("Not verified: no bills to check against");
+    expect(text).toContain("Incentive payback");
   });
 });

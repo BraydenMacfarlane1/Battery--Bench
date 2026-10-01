@@ -1,4 +1,5 @@
 import { estimateBackup, type BackupEstimate, type BackupScenario } from "./backup";
+import { dischargePowerKw, effectiveUsableKwh } from "./specs";
 import { resolveRoundTrip } from "./simulate";
 import {
   DEFAULT_ANALYSIS_YEARS,
@@ -329,16 +330,22 @@ function pinnedQuantities(include: readonly number[], maxQuantity: number): Set<
 
 function quantityCeiling(battery: Battery, peakKw: number, maxQuantity: number): number {
   const peak = Number.isFinite(peakKw) && peakKw > 0 ? peakKw : 0;
-  const unitKw = battery.max_discharge_rate_kw;
-  const unitKwh = battery.usable_capacity_kwh;
+  const unitKw = dischargePowerKw(battery);
+  const unitKwh = effectiveUsableKwh(battery);
   if (!(peak > 0) || !(unitKw > 0) || !(unitKwh > 0)) {
-    return Math.min(maxQuantity, MAX_POINTS_PER_BATTERY);
+    return Math.min(catalogUnitCap(battery, maxQuantity), MAX_POINTS_PER_BATTERY);
   }
   if (unitKw >= peak * OVERSIZED_POWER_RATIO) return 1;
   const coverPower = Math.max(1, Math.ceil(peak / unitKw));
   const coverEnergy = Math.max(1, Math.ceil((peak * ENERGY_COVER_HOURS) / unitKwh));
   const useful = Math.max(coverPower, Math.min(coverEnergy, coverPower * 2));
-  return Math.max(1, Math.min(maxQuantity, useful));
+  return Math.max(1, Math.min(catalogUnitCap(battery, maxQuantity), useful));
+}
+
+function catalogUnitCap(battery: Battery, maxQuantity: number): number {
+  const catalog = battery.max_units_per_system;
+  if (catalog != null && Number.isInteger(catalog) && catalog >= 1) return Math.min(maxQuantity, catalog);
+  return maxQuantity;
 }
 
 function integersThrough(max: number): number[] {
@@ -354,15 +361,15 @@ function integersThrough(max: number): number[] {
  */
 export function overrideQuantityMax(battery: Battery, peakKw: number): number {
   const peak = Number.isFinite(peakKw) && peakKw > 0 ? peakKw : 0;
-  const unitKw = battery.max_discharge_rate_kw;
-  const unitKwh = battery.usable_capacity_kwh;
+  const unitKw = dischargePowerKw(battery);
+  const unitKwh = effectiveUsableKwh(battery);
   let needed = OVERRIDE_QUANTITY_FLOOR;
   if (peak > 0 && unitKw > 0 && unitKwh > 0) {
     const coverKw = Math.ceil((peak * OVERRIDE_PEAK_COVER) / unitKw);
     const coverKwh = Math.ceil((peak * OVERRIDE_PEAK_COVER) / unitKwh);
     needed = Math.max(needed, coverKw, coverKwh);
   }
-  return Math.min(OVERRIDE_QUANTITY_CAP, Math.max(1, needed));
+  return Math.min(catalogUnitCap(battery, OVERRIDE_QUANTITY_CAP), Math.max(1, needed));
 }
 
 /**
@@ -613,7 +620,7 @@ function metricsFromSimulation(args: {
   const batteryPeak = Math.max(...args.simulation.monthly_peak_kw.with_battery);
   const solar = args.simulation.totals.solar_kwh;
   const eta = Math.sqrt(resolveRoundTrip(args.battery));
-  const usable = args.battery.usable_capacity_kwh * args.quantity;
+  const usable = effectiveUsableKwh(args.battery) * args.quantity;
   let self: number | null = null;
   if (solar > 1e-6) {
     const ratio = (solar - args.simulation.totals.grid_export_kwh) / solar;
