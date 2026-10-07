@@ -1,37 +1,81 @@
-import { projectCountLabel, formatCount, formatUpdated, friendlyToken } from "./format";
+import { CUSTOMER_SORTS, type CustomerGroup } from "../../sun-daddy/customers";
 import { useSizer } from "./context";
+import { formatCount, formatUpdated, friendlyToken, projectCountLabel } from "./format";
 
 export function ProjectStep() {
   const sizer = useSizer();
   const openGroup = sizer.groups.find((group) => group.key === sizer.openCustomerKey) ?? null;
+  const matched = sizer.groups.filter((group) => matchesCustomer(group, sizer.query));
+  const visible =
+    openGroup && !matched.some((group) => group.key === openGroup.key)
+      ? [openGroup, ...matched]
+      : matched;
+  const showPicker = sizer.projectsStatus === "ready" && sizer.groups.length > 0 && !sizer.busy;
   return (
     <div className="step">
-      <form
-        className="search-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          sizer.searchProjects();
-        }}
-      >
-        <label htmlFor="sun-search">Search Sun Daddy</label>
-        <div className="search-row">
-          <input
-            id="sun-search"
-            value={sizer.query}
-            autoFocus
-            placeholder="Customer or project name"
-            onChange={(event) => sizer.setQuery(event.target.value)}
-          />
-          <button type="submit" className="btn btn-primary" disabled={sizer.busy}>
-            {sizer.busy ? "Searching…" : "Search Sun Daddy"}
-          </button>
+      {showPicker ? (
+        <div className="customer-picker">
+          <label className="filter-field" htmlFor="customer-filter">
+            Filter customers
+            <input
+              id="customer-filter"
+              value={sizer.query}
+              placeholder="Optional"
+              onChange={(event) => sizer.setQuery(event.target.value)}
+            />
+          </label>
+          <div className="customer-row">
+            <label className="grow" htmlFor="customer-select">
+              Customer
+              <select
+                id="customer-select"
+                value={sizer.openCustomerKey ?? ""}
+                onChange={(event) => sizer.setOpenCustomerKey(event.target.value || null)}
+              >
+                <option value="">Choose a customer</option>
+                {visible.map((group) => (
+                  <option key={group.key} value={group.key}>
+                    {group.label ?? group.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="sort-field">
+              <span className="sort-caption" id="customer-sort-label">
+                Sort
+              </span>
+              <div className="sort-toggle" role="group" aria-labelledby="customer-sort-label">
+                {CUSTOMER_SORTS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={sizer.customerSort === option.id}
+                    onClick={() => sizer.setCustomerSort(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          {sizer.query.trim() && matched.length === 0 ? <p className="meta">No customers match that filter.</p> : null}
         </div>
-      </form>
+      ) : null}
+
+      {sizer.projectsStatus === "loading" ? (
+        <div className="state-card" role="status" aria-busy="true">
+          <p className="state-title">Loading customers</p>
+          <p className="meta">Sun Daddy is loading projects.</p>
+          <div className="skeleton" />
+          <div className="skeleton" />
+          <div className="skeleton short" />
+        </div>
+      ) : null}
 
       {sizer.busy ? (
         <div className="state-card" role="status" aria-busy="true">
-          <p className="state-title">Searching customers</p>
-          <p className="meta">Sun Daddy is looking up matching projects.</p>
+          <p className="state-title">Loading project</p>
+          <p className="meta">Sun Daddy is opening that project.</p>
           <div className="skeleton" />
           <div className="skeleton" />
           <div className="skeleton short" />
@@ -43,32 +87,19 @@ export function ProjectStep() {
           <p className="state-title">Sun Daddy is not available</p>
           <p>{sizer.sunMessage}</p>
           <p className="meta">You can keep going with example data or your own hourly files.</p>
+          {sizer.projectsStatus === "error" ? (
+            <button type="button" className="btn btn-ghost" onClick={sizer.reloadProjects}>
+              Retry
+            </button>
+          ) : null}
         </div>
       ) : null}
 
-      {!sizer.busy && !sizer.sunError && sizer.sunMessage && sizer.groups.length === 0 ? (
+      {!sizer.busy && !sizer.sunError && sizer.projectsStatus === "ready" && sizer.groups.length === 0 ? (
         <div className="state-card" role="status">
           <p className="state-title">No customers</p>
-          <p>{sizer.sunMessage}</p>
+          <p>{sizer.sunMessage ?? "No projects yet."}</p>
         </div>
-      ) : null}
-
-      {!sizer.busy && !openGroup && sizer.groups.length > 0 ? (
-        <ul className="entity-list" aria-label="Customers">
-          {sizer.groups.map((group) => (
-            <li key={group.key}>
-              <button type="button" className="entity" onClick={() => sizer.setOpenCustomerKey(group.key)}>
-                <span className="entity-body">
-                  <span className="entity-title">{group.name}</span>
-                  <span className="entity-meta">{projectCountLabel(group.projects.length)}</span>
-                </span>
-                <span className="entity-go" aria-hidden="true">
-                  View
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
       ) : null}
 
       {!sizer.busy && openGroup ? (
@@ -106,10 +137,6 @@ export function ProjectStep() {
 
       {!sizer.busy && !sizer.sunError && sizer.sunMessage && sizer.groups.length > 0 ? (
         <p className="note">{sizer.sunMessage}</p>
-      ) : null}
-
-      {!sizer.busy && sizer.groups.length === 0 && !sizer.sunMessage ? (
-        <p className="meta search-hint">Search lists customers. Open a name to see the projects under it.</p>
       ) : null}
 
       {sizer.loadedNote ? (
@@ -191,6 +218,14 @@ export function ProjectStep() {
       ) : null}
     </div>
   );
+}
+
+function matchesCustomer(group: CustomerGroup, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  if (group.name.toLocaleLowerCase().includes(needle)) return true;
+  if (group.label?.toLocaleLowerCase().includes(needle)) return true;
+  return group.projects.some((project) => project.name.toLocaleLowerCase().includes(needle));
 }
 
 function LoadAlternatives() {
