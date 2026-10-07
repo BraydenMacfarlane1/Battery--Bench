@@ -10,7 +10,7 @@ import { WIZARD_STEPS, type WizardStepId } from "./wizard";
 const COPY: Record<WizardStepId, { title: string; lede: string }> = {
   1: {
     title: "Who is this for?",
-    lede: "Search Sun Daddy, open a customer, then choose a project.",
+    lede: "Choose a customer, then open a project.",
   },
   2: {
     title: "Site and rate",

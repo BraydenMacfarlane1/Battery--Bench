@@ -16,6 +16,12 @@ async function useExample(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Use example data" }));
 }
 
+async function openSunCustomer(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
+  const select = await screen.findByLabelText("Customer");
+  const option = await within(select).findByRole("option", { name });
+  await user.selectOptions(select, option);
+}
+
 async function next(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Next" }));
 }
@@ -90,7 +96,7 @@ describe("hourly sizer", () => {
     await user.click(screen.getByRole("button", { name: "Upload CSVs / enter manually" }));
     await user.type(screen.getByLabelText("Load kWh, 8,760 values"), "1, 2, 3");
     await user.click(screen.getByRole("button", { name: "Use pasted load" }));
-    expect(screen.getByRole("alert").textContent).toContain("8,760");
+    expect(screen.getByText(/Expected 8,760 hourly values/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Step 5: Results" }));
     expect(screen.getByTestId("top-pick").textContent).toBe(before);
   });
@@ -109,8 +115,8 @@ describe("hourly sizer", () => {
       ),
     );
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    expect(screen.getByText(/SUN_DADDY_EXPORT_TOKEN/)).toBeTruthy();
+    expect(await screen.findByText(/SUN_DADDY_EXPORT_TOKEN/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     await goToResults(user);
     expect(screen.getByTestId("top-pick")).toBeTruthy();
   });
@@ -180,10 +186,11 @@ describe("hourly sizer", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    expect(screen.getByRole("button", { name: /Synthetic Customer/ }).textContent).toContain("1 project");
-    expect(screen.getByRole("button", { name: /No customer/ }).textContent).toContain("1 project");
-    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    const select = await screen.findByLabelText("Customer");
+    expect((await within(select).findByRole("option", { name: /Synthetic Customer/ })).textContent).toContain("1 project");
+    expect(within(select).getByRole("option", { name: /No customer/ }).textContent).toContain("1 project");
+    expect(screen.getByRole("button", { name: "Newest project" }).getAttribute("aria-pressed")).toBe("true");
+    await user.selectOptions(select, within(select).getByRole("option", { name: /Synthetic Customer/ }));
     expect(screen.getByRole("button", { name: /Solar \+ Battery - Carport/ }).textContent).toContain("120 kW");
     await user.click(screen.getByRole("button", { name: /Solar \+ Battery - Carport/ }));
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/api/sun-daddy/project/93"))).toBe(true);
@@ -239,8 +246,7 @@ describe("hourly sizer", () => {
       }),
     );
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await openSunCustomer(user, /Synthetic Customer/);
     await user.click(screen.getByRole("button", { name: /Synthetic warehouse/ }));
     await next(user);
     expect(screen.getByTestId("site-utility").textContent).toBe("NV Energy (NV)");
@@ -287,8 +293,7 @@ describe("hourly sizer", () => {
       }),
     );
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await openSunCustomer(user, /Synthetic Customer/);
     await user.click(screen.getByRole("button", { name: /Synthetic roof/ }));
     await next(user);
     expect(screen.getByTestId("site-utility").textContent).toBe("NV Energy");
@@ -469,8 +474,7 @@ describe("hourly sizer", () => {
       expect(screen.getByTestId("catalog-source").textContent).toBe("Battery catalog: Sun Daddy (3 batteries)");
     });
     await useExample(user);
-    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    await user.click(screen.getByRole("button", { name: /Synthetic Customer/ }));
+    await openSunCustomer(user, /Synthetic Customer/);
     await user.click(screen.getByRole("button", { name: /Synthetic warehouse/ }));
     expect(await screen.findByText("Loaded Synthetic warehouse.")).toBeTruthy();
     await next(user);
@@ -603,8 +607,7 @@ describe("hourly sizer", () => {
       }),
     );
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Search Sun Daddy" }));
-    await user.click(screen.getByRole("button", { name: /Bill Customer/ }));
+    await openSunCustomer(user, /Bill Customer/);
     await user.click(screen.getByRole("button", { name: /Monthly warehouse/ }));
     const notice = await screen.findByTestId("missing-hourly-load");
     expect(notice.textContent).toContain(

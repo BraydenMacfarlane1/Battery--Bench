@@ -7,7 +7,7 @@ import { syntheticBatteries, syntheticExample } from "../dispatch/synthetic-exam
 import type { DispatchStrategy, RateModel } from "../dispatch/types";
 import type { BackupLoadMode, BackupLoadShape } from "../dispatch/backup";
 import { parseHourlyNumbers } from "../dispatch/series-input";
-import { groupProjectsByCustomer } from "../sun-daddy/customers";
+import { groupCustomers, type CustomerSort } from "../sun-daddy/customers";
 import { normalizeBatteryCatalog, normalizeProjectList } from "../sun-daddy/normalize";
 import type { LoadHourlySource, NormalizedStudy, ProjectListItem } from "../sun-daddy/types";
 import { SizerProvider, type StudyMeta, type SizerContextValue, type SunStudyView } from "./sizer/context";
@@ -91,6 +91,8 @@ export default function CatalogSizer() {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [openCustomerKey, setOpenCustomerKey] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [customerSort, setCustomerSort] = useState<CustomerSort>("newest");
+  const [projectsStatus, setProjectsStatus] = useState<"loading" | "ready" | "error">("loading");
   const [sunMessage, setSunMessage] = useState<string | null>(null);
   const [sunError, setSunError] = useState(false);
   const [loadedNote, setLoadedNote] = useState<string | null>(null);
@@ -105,6 +107,7 @@ export default function CatalogSizer() {
   const [meta, setMeta] = useState<StudyMeta>({ customerName: "—", projectName: "—", utility: null });
   const [busy, setBusy] = useState(false);
   const catalogRequest = useRef(0);
+  const projectsRequest = useRef(0);
   const projectPicksRef = useRef(projectPicks);
   const batteryRowsRef = useRef(batteries);
   const appliedPickEpoch = useRef(0);
@@ -230,6 +233,7 @@ export default function CatalogSizer() {
 
   useEffect(() => {
     void loadCatalog();
+    void loadProjects();
   }, []);
 
   useEffect(() => {
@@ -310,7 +314,7 @@ export default function CatalogSizer() {
   const canNext = canAdvanceWizard(step, { hasData, modelOk: model.ok });
   const missingLoadMessage = source === "sun" && !hasData ? missingHourlyLoadMessage(sunLoadGap) : null;
   const loadBadge = hasData ? loadSourceBadge(hourlySource) : null;
-  const groups = useMemo(() => groupProjectsByCustomer(projects), [projects]);
+  const groups = useMemo(() => groupCustomers(projects, customerSort), [projects, customerSort]);
   const rankingBest = selection?.top ?? null;
   const unmetPeak =
     model.ok &&
@@ -343,33 +347,42 @@ export default function CatalogSizer() {
     setStep(target);
   }
 
-  async function searchProjects() {
-    setBusy(true);
+  async function loadProjects() {
+    const requestId = projectsRequest.current + 1;
+    projectsRequest.current = requestId;
+    setProjectsStatus("loading");
     setSunError(false);
     setSunMessage(null);
-    setOpenCustomerKey(null);
     try {
-      const response = await fetch(`/api/sun-daddy/projects?q=${encodeURIComponent(query)}`);
+      const response = await fetch("/api/sun-daddy/projects");
       const body = (await response.json()) as { error?: string; projects?: unknown; warnings?: string[] };
+      if (requestId !== projectsRequest.current) return;
       if (!response.ok) {
         setProjects([]);
+        setOpenCustomerKey(null);
         setSunError(true);
         setSunMessage(body.error ?? "Sun Daddy isn't available. The synthetic example still runs on this screen.");
+        setProjectsStatus("error");
         return;
       }
       const listed = normalizeProjectList(Array.isArray(body.projects) ? body.projects : []);
-      setProjects(listed.projects);
       const serverWarnings = Array.isArray(body.warnings) ? body.warnings : [];
       const warning =
         serverWarnings.find((entry) => typeof entry === "string" && entry.trim().length > 0) ?? listed.warnings[0];
+      setProjects(listed.projects);
+      setOpenCustomerKey((current) =>
+        current && groupCustomers(listed.projects).some((group) => group.key === current) ? current : null,
+      );
       setSunError(false);
       setSunMessage(warning ?? (listed.projects.length === 0 ? "No matching projects." : null));
+      setProjectsStatus("ready");
     } catch {
+      if (requestId !== projectsRequest.current) return;
       setProjects([]);
+      setOpenCustomerKey(null);
       setSunError(true);
       setSunMessage("Sun Daddy isn't available from this session. Paste hourly CSVs or keep the synthetic example.");
-    } finally {
-      setBusy(false);
+      setProjectsStatus("error");
     }
   }
 
@@ -551,6 +564,10 @@ export default function CatalogSizer() {
     goTo,
     query,
     setQuery,
+    customerSort,
+    setCustomerSort,
+    projectsStatus,
+    reloadProjects: () => void loadProjects(),
     busy,
     sunMessage,
     sunError,
@@ -565,7 +582,6 @@ export default function CatalogSizer() {
     groups,
     openCustomerKey,
     setOpenCustomerKey,
-    searchProjects: () => void searchProjects(),
     openProject: (project) => void openProject(project),
     loadExample,
     source,

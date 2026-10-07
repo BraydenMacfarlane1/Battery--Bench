@@ -2,7 +2,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import type { BackupLoadMode, BackupLoadShape } from "../../dispatch/backup";
 import type { CandidateMetrics, RankContext, RankingMode } from "../../dispatch/rank";
 import type { DispatchStrategy, SimulationResult } from "../../dispatch/types";
-import type { CustomerGroup } from "../../sun-daddy/customers";
+import type { CustomerGroup, CustomerSort } from "../../sun-daddy/customers";
 import type {
   LoadProfileMeta,
   NemScheduleInfo,
@@ -40,6 +40,10 @@ export type SizerContextValue = {
   goTo: (step: WizardStepId) => void;
   query: string;
   setQuery: (value: string) => void;
+  customerSort: CustomerSort;
+  setCustomerSort: (sort: CustomerSort) => void;
+  projectsStatus: "loading" | "ready" | "error";
+  reloadProjects: () => void;
   busy: boolean;
   sunMessage: string | null;
   sunError: boolean;
@@ -56,7 +60,6 @@ export type SizerContextValue = {
   groups: CustomerGroup[];
   openCustomerKey: string | null;
   setOpenCustomerKey: (key: string | null) => void;
-  searchProjects: () => void;
   openProject: (project: ProjectListItem) => void;
   loadExample: () => void;
   source: "none" | "example" | "manual" | "sun";
